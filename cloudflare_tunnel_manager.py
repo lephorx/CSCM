@@ -43,7 +43,7 @@ def create_tunnel(tunnel_name, server_port, subdomain):
         
         return {
             "tunnel_id": tunnel_id,
-            "tunnel_url": f"{subdomain}.yourdomain.com"
+            "tunnel_url": f"{subdomain}.homeops.services"
         }
         
     except requests.exceptions.RequestException as e:
