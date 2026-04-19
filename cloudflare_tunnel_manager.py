@@ -23,16 +23,19 @@ def create_tunnel(tunnel_name, server_port, subdomain):
         print(f"Tunnel created: {tunnel_id}")
         
         # Create DNS CNAME record
+        dns_payload = {
+            "type": "CNAME",
+            "name": subdomain,
+            "content": f"{tunnel_id}.cfargotunnel.com",
+            "ttl": 1,
+            "proxied": True
+        }
+        print(f"DNS payload: {dns_payload}")  # Debug
+        
         dns_response = requests.post(
             f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records",
             headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-            json={
-                "type": "CNAME",
-                "name": subdomain,
-                "content": f"{tunnel_id}.cfargotunnel.com",
-                "ttl": 1,
-                "proxied": True
-            }
+            json=dns_payload
         )
         dns_response.raise_for_status()
         
@@ -40,11 +43,12 @@ def create_tunnel(tunnel_name, server_port, subdomain):
         
         return {
             "tunnel_id": tunnel_id,
-            "tunnel_url": f"{subdomain}.homeops.services"
+            "tunnel_url": f"{subdomain}.yourdomain.com"
         }
         
     except requests.exceptions.RequestException as e:
         print(f"Error creating tunnel: {e}")
+        print(f"Response: {e.response.text}")  # Debug
         return None
 
 def delete_tunnel(tunnel_id):
