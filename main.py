@@ -7,7 +7,7 @@ import psycopg2
 from datetime import datetime
 
 from playit_manager import create_tunnel
-from cloudflare_manager import create_dns_record
+from cloudflare_manager import create_dns_record, create_srv_record, lookup_minecraft_srv_port
 
 load_dotenv()
 
@@ -130,14 +130,25 @@ def create_server(token, server_name="Minecraft test server", server_type="paper
         print("⚠️  PlayIT tunnel creation failed — skipping DNS record creation.")
         return
 
-    # Step 4: Create Cloudflare DNS record pointing subdomain → tunnel address
+    # Step 4: Create Cloudflare DNS records pointing subdomain → tunnel address
     print(f"Creating Cloudflare DNS record for '{subdomain}' → '{tunnel_address}'...")
     dns_name = create_dns_record(subdomain=subdomain, target=tunnel_address)
 
-    if dns_name:
-        print(f"✅ Server fully provisioned. Players can connect at: {dns_name}")
-    else:
+    if not dns_name:
         print("⚠️  DNS record creation failed. Tunnel address:", tunnel_address)
+        return
+
+    # Step 5: Look up the external port playit assigned and create an SRV record
+    print(f"Looking up external port for '{tunnel_address}'...")
+    external_port = lookup_minecraft_srv_port(tunnel_address)
+
+    if external_port:
+        print(f"External port: {external_port} — creating SRV record...")
+        create_srv_record(subdomain=subdomain, target=tunnel_address, port=external_port)
+    else:
+        print("⚠️  Could not determine external port — SRV record not created. Players must connect via direct tunnel address.")
+
+    print(f"✅ Server fully provisioned. Players can connect at: {dns_name}")
 
 if __name__ == "__main__":
     token = login()
