@@ -66,7 +66,7 @@ def create_tunnel(tunnel_name, server_port, subdomain):
                 "name": subdomain,
                 "content": f"{tunnel_id}.cfargotunnel.com",
                 "ttl": 1,
-                "proxied": True,
+                "proxied": False,
             },
         )
         dns_response.raise_for_status()
