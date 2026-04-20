@@ -1,9 +1,13 @@
+import asyncio
 import os
 import requests
 import urllib3
 from dotenv import load_dotenv
 import psycopg2
 from datetime import datetime
+
+from playit_manager import create_tunnel
+from cloudflare_manager import create_dns_record
 
 load_dotenv()
 
@@ -28,12 +32,16 @@ username = os.getenv("USERNAME", "admin")
 password = os.getenv("PASSWORD", "admin")
 
 def login():
-    response = requests.post(
-        f"{base_url}/api/v2/auth/login",
-        json={"username": username, "password": password},
-        verify=False
-    )
-    
+    try:
+        response = requests.post(
+            f"{base_url}/api/v2/auth/login",
+            json={"username": username, "password": password},
+            verify=False
+        )
+    except requests.exceptions.ConnectionError:
+        print(f"Login failed: could not connect to Crafty at {base_url}. Is it running?")
+        return None
+
     print(f"Login status: {response.status_code}")
     print(f"Response: {response.json()}")
     
@@ -60,7 +68,7 @@ def delete_crafty_server(crafty_server_id, headers):
         print(f"Error deleting Crafty server: {e}")
 
 
-def create_server(token, server_name="Example name", server_type="paper", version="1.18.2", server_port=25570):
+def create_server(token, server_name="Minecraft test server", server_type="paper", version="1.18.2", server_port=25580):
     subdomain = server_name.lower().replace(" ", "-")
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -113,6 +121,23 @@ def create_server(token, server_name="Example name", server_type="paper", versio
         print(f"Database error: {e}")
         connection.rollback()
         return
+
+    # Step 3: Create PlayIT tunnel for the server port
+    print(f"Creating PlayIT tunnel '{subdomain}' on port {server_port}...")
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port))
+
+    if not tunnel_address:
+        print("⚠️  PlayIT tunnel creation failed — skipping DNS record creation.")
+        return
+
+    # Step 4: Create Cloudflare DNS record pointing subdomain → tunnel address
+    print(f"Creating Cloudflare DNS record for '{subdomain}' → '{tunnel_address}'...")
+    dns_name = create_dns_record(subdomain=subdomain, target=tunnel_address)
+
+    if dns_name:
+        print(f"✅ Server fully provisioned. Players can connect at: {dns_name}")
+    else:
+        print("⚠️  DNS record creation failed. Tunnel address:", tunnel_address)
 
 if __name__ == "__main__":
     token = login()
