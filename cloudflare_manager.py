@@ -24,13 +24,17 @@ def create_dns_record(subdomain: str, target: str, proxied: bool = False) -> str
         The full DNS name that was created (e.g. ``my-server.example.com``),
         or ``None`` on failure.
     """
-    if not CLOUDFLARE_API_TOKEN or not CLOUDFLARE_ZONE_ID or not CLOUDFLARE_BASE_DOMAIN:
+    api_token = os.getenv("CLOUDFLARE_API_TOKEN")
+    zone_id = os.getenv("CLOUDFLARE_ZONE_ID")
+    base_domain = os.getenv("CLOUDFLARE_BASE_DOMAIN")
+
+    if not api_token or not zone_id or not base_domain:
         print("Cloudflare env vars missing: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, CLOUDFLARE_BASE_DOMAIN required")
         return None
 
-    full_name = f"{subdomain}.{CLOUDFLARE_BASE_DOMAIN}"
+    full_name = f"{subdomain}.{base_domain}"
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
     }
     payload = {
