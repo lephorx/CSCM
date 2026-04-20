@@ -110,7 +110,7 @@ def create_server(token, server_name="Minecraft test server", server_type="paper
     # Step 2: Insert server into DB
     try:
         cursor.execute(
-            "INSERT INTO servers (name, type, version, serverPort, craftyId, createdAt) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO servers (name, type, version, serverport, craftyid, createdat) VALUES (%s, %s, %s, %s, %s, %s)",
             (server_name, server_type, version, server_port, crafty_server_id, datetime.now()),
         )
         connection.commit()

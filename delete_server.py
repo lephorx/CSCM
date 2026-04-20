@@ -79,7 +79,7 @@ def delete_crafty_server(crafty_server_id: str, headers: dict) -> bool:
 def delete_server(db_server_id: int) -> None:
     # Step 1: Look up server in DB
     cursor.execute(
-        'SELECT id, name, "craftyId" FROM servers WHERE id = %s',
+        'SELECT id, name, craftyid FROM servers WHERE id = %s',
         (db_server_id,),
     )
     row = cursor.fetchone()

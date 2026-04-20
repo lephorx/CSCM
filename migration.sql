@@ -3,7 +3,7 @@
 
 -- 1. Add craftyId column to existing servers table (if not already present)
 ALTER TABLE servers
-  ADD COLUMN IF NOT EXISTS "craftyId" TEXT;
+  ADD COLUMN IF NOT EXISTS craftyid TEXT;
 
 -- 2. PlayIT tunnels — one row per tunnel created for a server
 CREATE TABLE IF NOT EXISTS playit_tunnels (
