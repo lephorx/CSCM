@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-PlayIT Tunnel Creation Automation Script
-Automates the entire tunnel setup process on playit.gg
+PlayIT tunnel automation module.
+
+Drives a headless Chromium browser to log into playit.gg and create a
+new Minecraft Java tunnel for a given local port.  Returns the allocated
+public tunnel address (e.g. ``abc.deu.mcjoin.link``) on success.
 """
 
 import asyncio
@@ -10,34 +13,45 @@ import sys
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-# Load environment variables
+from logger import get_logger
+
 load_dotenv()
 
-# Configuration
-PLAYIT_EMAIL = os.getenv("PLAYIT_EMAIL")
-PLAYIT_PASSWORD = os.getenv("PLAYIT_PASSWORD")
-TUNNEL_NAME = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
-TUNNEL_PORT = os.getenv("TUNNEL_PORT", "25565")
+log = get_logger("playit")
 
-TIMEOUT = 30000  # 30 seconds
+PLAYIT_EMAIL    = os.getenv("PLAYIT_EMAIL")
+PLAYIT_PASSWORD = os.getenv("PLAYIT_PASSWORD")
+TUNNEL_NAME     = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
+TUNNEL_PORT     = os.getenv("TUNNEL_PORT", "25565")
+
+# Milliseconds to wait for page elements before raising a timeout error
+TIMEOUT = 30000
 
 
 async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
     """Create a PlayIT tunnel with the given name and local port.
 
-    Returns the allocated tunnel address (e.g. ``abc.mcjoin.link``) on
-    success, or ``None`` on failure.
-    """
+    Drives the playit.gg web UI to provision a new Minecraft Java tunnel.
 
+    Args:
+        tunnel_name: Human-readable label for the tunnel (used as the tunnel
+                     name inside the playit.gg dashboard).
+        tunnel_port: Local port the Minecraft server is listening on.
+
+    Returns:
+        The allocated public address (e.g. ``abc.deu.mcjoin.link``),
+        or ``None`` on failure.
+    """
     if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
-        print("❌ Error: PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables required")
+        log.error("PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables are required")
         return None
 
     headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
+    log.debug("Browser headless mode: %s", headless)
 
     try:
         async with async_playwright() as pw:
-            print("🚀 Launching browser...")
+            log.info("Launching Chromium browser")
             browser = await pw.chromium.launch(
                 headless=headless,
                 args=[
@@ -49,162 +63,124 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             )
             page = await browser.new_page(viewport={"width": 1280, "height": 720})
 
-            # Navigate to PlayIT
-            print("📍 Navigating to playit.gg...")
+            log.debug("Navigating to playit.gg")
             await page.goto("https://playit.gg", wait_until="load")
             await asyncio.sleep(1)
 
-            # Click Sign In
-            print("🔐 Clicking Sign In...")
+            log.debug("Opening login page")
             await page.click('a[href="/login"]')
             await asyncio.sleep(1)
 
-            # Fill email
-            print(f"📧 Entering email: {PLAYIT_EMAIL}")
+            log.debug("Entering credentials")
             await page.fill('input[id="email"]', PLAYIT_EMAIL)
             await asyncio.sleep(0.5)
-
-            # Fill password
-            print("🔑 Entering password...")
             await page.fill('input[id="password"]', PLAYIT_PASSWORD)
             await asyncio.sleep(0.5)
 
-            # Click login button
-            print("✅ Clicking Login...")
+            log.info("Submitting login form")
             await page.click('button[type="submit"]')
 
-            # Wait for dashboard to load after login
-            print("⏳ Waiting for dashboard...")
+            log.debug("Waiting for dashboard")
             await page.wait_for_selector('span._11qktlo8', timeout=TIMEOUT)
             await asyncio.sleep(1)
 
-            # Click Tunnels
-            print("🌐 Clicking Tunnels...")
+            log.debug("Navigating to Tunnels section")
             await page.click('span._11qktlo8')
             await asyncio.sleep(1)
 
-            # Wait for New Tunnel link to load
-            print("⏳ Waiting for Tunnels page...")
             await page.wait_for_selector('a[href="/account/setup/new-tunnel"]', timeout=TIMEOUT)
             await asyncio.sleep(0.5)
 
-            # Click New Tunnel
-            print("➕ Clicking New Tunnel...")
+            log.info("Creating new tunnel: name=%s, port=%s", tunnel_name, tunnel_port)
             await page.click('a[href="/account/setup/new-tunnel"]')
             await asyncio.sleep(1)
 
-            # Enter tunnel name
-            print(f"📝 Entering tunnel name: {tunnel_name}")
             await page.fill('input[name="name"]', tunnel_name)
             await asyncio.sleep(0.5)
 
-            # Click Next
-            print("➡️ Clicking Next (tunnel name)...")
+            # Confirm tunnel name
             await page.click('button[type="submit"]')
             await asyncio.sleep(1)
 
-            # Click Minecraft Java
-            print("🎮 Selecting Minecraft Java...")
+            # Select Minecraft Java protocol
+            log.debug("Selecting Minecraft Java protocol")
             await page.click('div._15pr4g97')
             await asyncio.sleep(1)
-
-            # Click Next
-            print("➡️ Clicking Next (tunnel type)...")
             await page.click('button[type="submit"]')
             await asyncio.sleep(1)
 
-            # Click Premium Network
-            print("🌟 Selecting Premium Network...")
+            # Select Premium Network
+            log.debug("Selecting Premium Network")
             await page.click('button.zrkgene')
             await asyncio.sleep(1)
 
-            # Click Germany (find by text content)
-            print("🇩🇪 Selecting Germany / Europe...")
+            # Select Germany / Europe region
+            log.debug("Selecting Germany / Europe region")
             await page.evaluate("""
                 () => {
                     const regions = Array.from(document.querySelectorAll('div._15pr4g9g'));
-                    const germanyRegion = regions.find(el => el.textContent.includes('Germany'));
-                    if (germanyRegion) germanyRegion.click();
+                    const target = regions.find(el => el.textContent.includes('Germany'));
+                    if (target) target.click();
                 }
             """)
             await asyncio.sleep(1)
-
-            # Click Next
-            print("➡️ Clicking Next (region)...")
             await page.click('button.maeflab')
             await asyncio.sleep(1)
 
-            # Click Agent s-ubumcr01
-            print("🤖 Selecting Agent s-ubumcr01...")
+            # Select agent
+            log.debug("Selecting agent")
             await page.click('div._15pr4g9v')
             await asyncio.sleep(1)
-
-            # Click Next
-            print("➡️ Clicking Next (agent)...")
             buttons = await page.query_selector_all('button.maeflab')
             if buttons:
                 await buttons[-1].click()
             await asyncio.sleep(1)
 
-            # Clear port field and enter port
-            print(f"🔌 Setting port to {tunnel_port}...")
+            # Set local port
+            log.debug("Setting local port: %s", tunnel_port)
             await page.fill('input[placeholder="NULL"]', str(tunnel_port))
             await asyncio.sleep(0.5)
-
-            # Click Next (submit port)
-            print("➡️ Clicking Next (port)...")
             submit_buttons = await page.query_selector_all('button[type="submit"]')
             if submit_buttons:
                 await submit_buttons[-1].click()
             await asyncio.sleep(1)
 
-            # Click Create Tunnel
-            print("🚀 Clicking Create Tunnel...")
+            # Submit tunnel creation
             await page.click('button[type="submit"]')
             await asyncio.sleep(2)
 
-            # Wait for tunnel address to load
-            print("⏳ Waiting for tunnel address allocation...")
+            log.info("Waiting for tunnel address allocation")
             await page.wait_for_function("""
                 () => {
                     const el = document.querySelector('span.lm6flc4');
-                    return el && el.textContent.includes('.mcjoin.link') ? el.textContent.trim() : null;
+                    return el && el.textContent.includes('.mcjoin.link')
+                        ? el.textContent.trim()
+                        : null;
                 }
             """, timeout=TIMEOUT * 2)
 
-            address = await page.evaluate("""
-                () => document.querySelector('span.lm6flc4').textContent.trim()
-            """)
+            address = await page.evaluate(
+                "() => document.querySelector('span.lm6flc4').textContent.trim()"
+            )
 
-            print(f"\n✅ SUCCESS!\n🎮 Tunnel Address: {address}")
-            print(f"📊 Type: Minecraft Java")
-            print(f"🌍 Region: Germany (Europe)")
-            print(f"🤖 Agent: s-ubumcr01 (Premium)")
-            print(f"🔌 Port: {tunnel_port}\n")
-
+            log.info("Tunnel created successfully: address=%s, port=%s", address, tunnel_port)
             await browser.close()
             return address
 
     except PlaywrightTimeoutError:
-        print("❌ Timeout: Page load took too long")
+        log.error("Tunnel creation timed out waiting for a page element")
         return None
-    except Exception as e:
-        print(f"❌ Error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+    except Exception as exc:
+        log.exception("Unexpected error during tunnel creation: %s", exc)
         return None
 
 
-async def main():
-    """Standalone entry point — uses environment variables."""
-    result = await create_tunnel(
-        tunnel_name=TUNNEL_NAME,
-        tunnel_port=TUNNEL_PORT,
-    )
+async def _main() -> None:
+    """Standalone entry point — reads configuration from environment variables."""
+    result = await create_tunnel(tunnel_name=TUNNEL_NAME, tunnel_port=TUNNEL_PORT)
     if result is None:
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    asyncio.run(_main())
