@@ -31,12 +31,13 @@ def _cf_headers():
 
 
 def _playit_result(response):
-    """Parse a playit API response and return the data payload."""
+    """Parse a playit API response and return the data payload, or raise on failure."""
     response.raise_for_status()
     body = response.json()
-    if "data" in body:
-        return body["data"]
-    raise ValueError(f"Unexpected playit API response: {body}")
+    status = body.get("status")
+    if status == "success":
+        return body.get("data")
+    raise ValueError(f"playit API error (status={status}): {body.get('data', body)}")
 
 
 def create_tunnel(tunnel_name, server_port, subdomain):
@@ -48,7 +49,16 @@ def create_tunnel(tunnel_name, server_port, subdomain):
        (ns1.playit-dns.com serves SRV records so players can connect directly).
     """
     try:
-        # 1. Create the tunnel
+        # 0. Get agent ID (required by the origin field)
+        rundata_res = requests.post(
+            f"{PLAYIT_API}/agents/rundata",
+            headers=_playit_headers(),
+            json={},
+        )
+        agent_id = _playit_result(rundata_res)["agent_id"]
+        print(f"Agent ID: {agent_id}")
+
+        # 1. Create the tunnel with local port mapping in one call
         create_res = requests.post(
             f"{PLAYIT_API}/tunnels/create",
             headers=_playit_headers(),
@@ -57,11 +67,18 @@ def create_tunnel(tunnel_name, server_port, subdomain):
                 "tunnel_type": "minecraft-java",
                 "port_type": "tcp",
                 "port_count": 1,
-                "origin": {"type": "agent"},
+                "origin": {
+                    "type": "agent",
+                    "data": {
+                        "agent_id": agent_id,
+                        "local_ip": "127.0.0.1",
+                        "local_port": server_port,
+                    },
+                },
                 "enabled": True,
             },
         )
-        tunnel_id = _playit_result(create_res)
+        tunnel_id = str(_playit_result(create_res)["id"])
         print(f"Tunnel created: {tunnel_id}")
 
         # 2. Wait for the tunnel to receive a public allocation (up to 60 seconds)
@@ -74,32 +91,20 @@ def create_tunnel(tunnel_name, server_port, subdomain):
                 json={"tunnel_id": tunnel_id, "agent_id": None},
             )
             tunnels = _playit_result(list_res).get("tunnels", [])
-            if tunnels and tunnels[0].get("alloc"):
-                public_domain = tunnels[0]["alloc"].get("assigned_domain")
-                if public_domain:
-                    print(f"Tunnel allocated at: {public_domain}")
-                    break
+            if tunnels:
+                alloc = tunnels[0].get("alloc", {})
+                if alloc.get("status") == "allocated":
+                    public_domain = alloc.get("data", {}).get("assigned_domain")
+                    if public_domain:
+                        print(f"Tunnel allocated at: {public_domain}")
+                        break
             print(f"Waiting for allocation... ({attempt + 1}/20)")
 
         if not public_domain:
             print("Tunnel allocation timed out after 60 seconds.")
             return None
 
-        # 3. Map the tunnel to the local Minecraft port
-        update_res = requests.post(
-            f"{PLAYIT_API}/tunnels/update",
-            headers=_playit_headers(),
-            json={
-                "tunnel_id": tunnel_id,
-                "new_local_ip": "127.0.0.1",
-                "new_local_port": server_port,
-                "new_agent_id": None,
-            },
-        )
-        _playit_result(update_res)
-        print(f"Tunnel mapped to 127.0.0.1:{server_port}")
-
-        # 4. Add Cloudflare NS record: subdomain.DOMAIN -> ns1.playit-dns.com
+        # 3. Add Cloudflare NS record: subdomain.DOMAIN -> ns1.playit-dns.com
         #    This delegates DNS for the subdomain to playit, which serves the
         #    SRV records Minecraft clients need to connect.
         ns_res = requests.post(
