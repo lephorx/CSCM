@@ -53,8 +53,8 @@ except psycopg2.OperationalError as exc:
 # Crafty Controller configuration
 # ---------------------------------------------------------------------------
 base_url        = os.getenv("BASE_URL", "https://localhost:8443")
-crafty_username = os.getenv("USERNAME", "admin")
-crafty_password = os.getenv("PASSWORD", "admin")
+crafty_username = os.getenv("CRAFTY_USER", "admin")
+crafty_password = os.getenv("CRAFTY_PASS", "admin")
 
 
 def crafty_login() -> str | None:
@@ -65,9 +65,11 @@ def crafty_login() -> str | None:
             json={"username": crafty_username, "password": crafty_password},
             verify=False,
         )
-        if r.status_code == 200:
-            return r.json()["data"]["token"]
-        log.error("Crafty authentication failed: HTTP %d", r.status_code)
+        data = r.json()
+        if r.status_code == 200 and data.get("status") == "ok":
+            return data["data"]["token"]
+        error_detail = data.get("error_data") or data.get("error") or r.text
+        log.error("Crafty authentication failed: HTTP %d — %s", r.status_code, error_detail)
         return None
     except requests.exceptions.ConnectionError:
         log.error("Cannot reach Crafty Controller at %s", base_url)

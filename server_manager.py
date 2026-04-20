@@ -58,8 +58,8 @@ SERVER_TYPES = {
 }
 
 _base_url    = os.getenv("BASE_URL", "https://localhost:8443")
-_crafty_user = os.getenv("USERNAME", "admin")
-_crafty_pass = os.getenv("PASSWORD", "admin")
+_crafty_user = os.getenv("CRAFTY_USER", "admin")
+_crafty_pass = os.getenv("CRAFTY_PASS", "admin")
 
 
 def _get_db() -> psycopg2.extensions.connection:
@@ -86,10 +86,12 @@ def crafty_login() -> str | None:
             json={"username": _crafty_user, "password": _crafty_pass},
             verify=False,
         )
-        if r.status_code == 200:
+        data = r.json()
+        if r.status_code == 200 and data.get("status") == "ok":
             log.debug("Crafty authentication successful")
-            return r.json()["data"]["token"]
-        log.error("Crafty authentication failed: HTTP %d", r.status_code)
+            return data["data"]["token"]
+        error_detail = data.get("error_data") or data.get("error") or r.text
+        log.error("Crafty authentication failed: HTTP %d — %s", r.status_code, error_detail)
         return None
     except requests.exceptions.ConnectionError:
         log.error("Cannot reach Crafty Controller at %s", _base_url)
@@ -168,7 +170,12 @@ def provision_server(
             verify=False,
         )
         r.raise_for_status()
-        crafty_server_id = r.json()["data"]["new_server_id"]
+        data = r.json()
+        if data.get("status") != "ok":
+            error_detail = data.get("error_data") or data.get("error") or r.text
+            log.error("Crafty rejected server creation: %s", error_detail)
+            return {"success": False, "message": f"Crafty server creation failed: {error_detail}"}
+        crafty_server_id = data["data"]["new_server_id"]
         log.info("Crafty server created: crafty_id=%s", crafty_server_id)
     except requests.exceptions.RequestException as exc:
         log.error("Crafty server creation failed: %s", exc)

@@ -77,8 +77,8 @@ Create a `.env` file in the project root (or export the variables directly).
 ```dotenv
 # ── Crafty Controller ──────────────────────────────────────────────────────
 BASE_URL=https://localhost:8443       # Crafty base URL (no trailing slash)
-USERNAME=admin                        # Crafty admin username
-PASSWORD=changeme                     # Crafty admin password
+CRAFTY_USER=admin                     # Crafty admin username
+CRAFTY_PASS=changeme                  # Crafty admin password
 
 # ── Neon / PostgreSQL ──────────────────────────────────────────────────────
 DB_NAME=cscm
