@@ -8,16 +8,19 @@ from cloudflare_tunnel_manager import create_tunnel, delete_tunnel, setup_and_ru
 
 load_dotenv()
 
-connection = psycopg2.connect(
-    database=os.getenv("DB_NAME"),
-    user=os.getenv("DB_USER"),
-    password=os.getenv("DB_PASSWORD"),
-    host=os.getenv("DB_HOST"),
-    port=os.getenv("DB_PORT"),
-    sslmode="require"
-)
-
-cursor = connection.cursor()
+try:
+    connection = psycopg2.connect(
+        database=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        sslmode="require",
+    )
+    cursor = connection.cursor()
+except psycopg2.OperationalError as e:
+    print(f"Database connection failed: {e}")
+    raise SystemExit(1)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -93,7 +96,7 @@ def create_server(token, server_name="Example name", server_type="paper", versio
             print(f"Tunnel created and linked to server: {tunnel_info['tunnel_url']}")
             
             print(f"\nStarting cloudflared tunnel...")
-            tunnel_process = setup_and_run_tunnel(tunnel_info['tunnel_id'], server_port, subdomain)
+            tunnel_process = setup_and_run_tunnel(tunnel_info["tunnel_token"])
             
             if tunnel_process:
                 print(f"✓ Tunnel is running!")
