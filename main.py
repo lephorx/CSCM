@@ -45,9 +45,47 @@ def login():
         print("Login failed!")
         return None
 
+def delete_crafty_server(crafty_server_id, headers):
+    """Delete a Crafty server by its ID."""
+    try:
+        response = requests.delete(
+            f"{base_url}/api/v2/servers/{crafty_server_id}",
+            headers=headers,
+            verify=False,
+        )
+        if response.ok:
+            print(f"Crafty server {crafty_server_id} deleted")
+        else:
+            print(f"Failed to delete Crafty server: {response.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error deleting Crafty server: {e}")
+
+
 def create_server(token, server_name="Example name", server_type="paper", version="1.18.2", server_port=25570):
     subdomain = server_name.lower().replace(" ", "-")
-    
+    headers = {"Authorization": f"Bearer {token}"}
+
+    crafty_server_id = None
+    db_server_id = None
+    tunnel_info = None
+
+    def rollback(reason):
+        print(f"\nRolling back: {reason}")
+        if tunnel_info:
+            delete_tunnel(tunnel_info["tunnel_id"])
+        if db_server_id:
+            try:
+                cursor.execute("DELETE FROM cloudflare_tunnels WHERE serverId = %s", (db_server_id,))
+                cursor.execute("DELETE FROM servers WHERE id = %s", (db_server_id,))
+                connection.commit()
+                print("DB entries removed")
+            except psycopg2.Error as db_err:
+                print(f"DB rollback error: {db_err}")
+                connection.rollback()
+        if crafty_server_id:
+            delete_crafty_server(crafty_server_id, headers)
+
+    # Step 1: Create Crafty server
     data = {
         "name": server_name,
         "monitoring_type": "minecraft_java",
@@ -64,51 +102,64 @@ def create_server(token, server_name="Example name", server_type="paper", versio
                 "version": version,
                 "mem_min": 2,
                 "mem_max": 4,
-                "server_properties_port": server_port
-            }
-        }
+                "server_properties_port": server_port,
+            },
+        },
     }
-    
-    headers = {"Authorization": f"Bearer {token}"}
+
     try:
         response = requests.post(f"{base_url}/api/v2/servers", json=data, headers=headers, verify=False)
         response.raise_for_status()
-        
-        print(f"Server created: {response.json()}")
-        
+        crafty_server_id = response.json()["data"]["new_server_id"]
+        print(f"Crafty server created: {crafty_server_id}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error creating Crafty server: {e}")
+        return
+
+    # Step 2: Insert server into DB
+    try:
         cursor.execute(
             "INSERT INTO servers (name, type, version, serverPort, createdAt) VALUES (%s, %s, %s, %s, %s)",
-            (server_name, server_type, version, server_port, datetime.now())
+            (server_name, server_type, version, server_port, datetime.now()),
         )
         connection.commit()
-        
         cursor.execute("SELECT id FROM servers WHERE name = %s", (server_name,))
-        server_id = cursor.fetchone()[0]
-        
-        tunnel_info = create_tunnel(f"mc-{subdomain}", server_port, subdomain)
-        
-        if tunnel_info:
-            cursor.execute(
-                "INSERT INTO cloudflare_tunnels (serverId, tunnelName, tunnelId, tunnelUrl, status) VALUES (%s, %s, %s, %s, %s)",
-                (server_id, f"mc-{subdomain}", tunnel_info['tunnel_id'], tunnel_info['tunnel_url'], 'active')
-            )
-            connection.commit()
-            print(f"Tunnel created and linked to server: {tunnel_info['tunnel_url']}")
-            
-            print(f"\nStarting cloudflared tunnel...")
-            tunnel_process = setup_and_run_tunnel(tunnel_info["tunnel_token"])
-            
-            if tunnel_process:
-                print(f"✓ Tunnel is running!")
-                print(f"✓ Connect to: {tunnel_info['tunnel_url']}")
-            
-    except requests.exceptions.RequestException as e:
-        print(f"Error creating server via API: {e}")
-        return
+        db_server_id = cursor.fetchone()[0]
     except psycopg2.Error as e:
         print(f"Database error: {e}")
         connection.rollback()
+        rollback("DB insert failed")
         return
+
+    # Step 3: Create Cloudflare tunnel
+    tunnel_info = create_tunnel(f"mc-{subdomain}", server_port, subdomain)
+    if not tunnel_info:
+        rollback("Cloudflare tunnel creation failed")
+        return
+
+    # Step 4: Insert tunnel into DB
+    try:
+        cursor.execute(
+            "INSERT INTO cloudflare_tunnels (serverId, tunnelName, tunnelId, tunnelUrl, status) VALUES (%s, %s, %s, %s, %s)",
+            (db_server_id, f"mc-{subdomain}", tunnel_info["tunnel_id"], tunnel_info["tunnel_url"], "active"),
+        )
+        connection.commit()
+        print(f"Tunnel linked to server: {tunnel_info['tunnel_url']}")
+    except psycopg2.Error as e:
+        print(f"Database error: {e}")
+        connection.rollback()
+        rollback("DB tunnel insert failed")
+        return
+
+    # Step 5: Start cloudflared
+    print("\nStarting cloudflared tunnel...")
+    tunnel_process = setup_and_run_tunnel(tunnel_info["tunnel_token"])
+    if not tunnel_process:
+        rollback("cloudflared failed to start or exited immediately")
+        return
+
+    print(f"✓ Tunnel is running!")
+    print(f"✓ Connect to: {tunnel_info['tunnel_url']}")
 
 if __name__ == "__main__":
     token = login()

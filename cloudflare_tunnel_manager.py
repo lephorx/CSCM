@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import requests
 import os
 import subprocess
+import time
 
 load_dotenv()
 
@@ -120,14 +121,25 @@ def delete_tunnel(tunnel_id):
 
 def setup_and_run_tunnel(tunnel_token):
     """Start cloudflared using the tunnel token — no credentials file or config file needed."""
+    log_dir = os.path.expanduser("~/.cloudflared/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "cloudflared.log")
+
     try:
+        log_file = open(log_path, "a")
         process = subprocess.Popen(
             ["cloudflared", "tunnel", "run", "--token", tunnel_token],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=log_file,
+            stderr=log_file,
             start_new_session=True,
         )
-        print(f"Tunnel started with PID: {process.pid}")
+        # Wait briefly to detect immediate startup failures (bad token, network issue, etc.)
+        time.sleep(3)
+        if process.poll() is not None:
+            print(f"cloudflared exited immediately (exit code {process.returncode}).")
+            print(f"Check logs: {log_path}")
+            return None
+        print(f"Tunnel started with PID: {process.pid} (logs: {log_path})")
         return process
     except FileNotFoundError:
         print("cloudflared is not installed.")
