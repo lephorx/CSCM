@@ -72,7 +72,8 @@ def create_server(token, server_name="Example name", server_type="paper", versio
     def rollback(reason):
         print(f"\nRolling back: {reason}")
         if tunnel_info:
-            delete_tunnel(tunnel_info["tunnel_id"])
+            subdomain = tunnel_info["tunnel_url"].split(".")[0]
+            delete_tunnel(tunnel_info["tunnel_id"], subdomain)
         if db_server_id:
             try:
                 cursor.execute("DELETE FROM cloudflare_tunnels WHERE serverId = %s", (db_server_id,))
@@ -151,9 +152,9 @@ def create_server(token, server_name="Example name", server_type="paper", versio
         rollback("DB tunnel insert failed")
         return
 
-    # Step 5: Start cloudflared
-    print("\nStarting cloudflared tunnel...")
-    tunnel_process = setup_and_run_tunnel(tunnel_info["tunnel_token"])
+    # Step 5: Start playit agent
+    print("\nStarting playit agent...")
+    tunnel_process = setup_and_run_tunnel()
     if not tunnel_process:
         rollback("cloudflared failed to start or exited immediately")
         return

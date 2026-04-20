@@ -6,142 +6,192 @@ import time
 
 load_dotenv()
 
+# Cloudflare (used only for the NS delegation record)
 CF_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
-ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
 ZONE_ID = os.getenv("CLOUDFLARE_ZONE_ID")
 DOMAIN = os.getenv("CLOUDFLARE_DOMAIN", "homeops.services")
 
+# playit.gg
+PLAYIT_SECRET_KEY = os.getenv("PLAYIT_SECRET_KEY")
+PLAYIT_API = "https://api.playit.gg"
 
-def create_tunnel(tunnel_name, server_port, subdomain):
-    """Create a Cloudflare tunnel, configure ingress via API, and set up DNS — fully automated."""
-    headers = {
+
+def _playit_headers():
+    return {
+        "Authorization": f"agent-key {PLAYIT_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _cf_headers():
+    return {
         "Authorization": f"Bearer {CF_API_TOKEN}",
         "Content-Type": "application/json",
     }
+
+
+def _playit_result(response):
+    """Parse a playit API response and return the data payload."""
+    response.raise_for_status()
+    body = response.json()
+    if "data" in body:
+        return body["data"]
+    raise ValueError(f"Unexpected playit API response: {body}")
+
+
+def create_tunnel(tunnel_name, server_port, subdomain):
+    """
+    1. Create a playit.gg Minecraft Java tunnel via the REST API.
+    2. Wait for the tunnel to receive a public allocation.
+    3. Map the tunnel to the local Minecraft port.
+    4. Add a Cloudflare NS record delegating the subdomain to playit's DNS
+       (ns1.playit-dns.com serves SRV records so players can connect directly).
+    """
     try:
         # 1. Create the tunnel
-        tunnel_response = requests.post(
-            f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/cfd_tunnel",
-            headers=headers,
-            json={"name": tunnel_name, "config_src": "cloudflare"},
+        create_res = requests.post(
+            f"{PLAYIT_API}/tunnels/create",
+            headers=_playit_headers(),
+            json={
+                "name": tunnel_name,
+                "tunnel_type": "minecraft-java",
+                "port_type": "tcp",
+                "port_count": 1,
+                "origin": {"type": "agent"},
+                "enabled": True,
+            },
         )
-        tunnel_response.raise_for_status()
-        tunnel_id = tunnel_response.json()["result"]["id"]
+        tunnel_id = _playit_result(create_res)
         print(f"Tunnel created: {tunnel_id}")
 
-        # 2. Configure ingress rules via the API (no local config file required)
-        config_response = requests.put(
-            f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations",
-            headers=headers,
+        # 2. Wait for the tunnel to receive a public allocation (up to 60 seconds)
+        public_domain = None
+        for attempt in range(20):
+            time.sleep(3)
+            list_res = requests.post(
+                f"{PLAYIT_API}/tunnels/list",
+                headers=_playit_headers(),
+                json={"tunnel_id": tunnel_id, "agent_id": None},
+            )
+            tunnels = _playit_result(list_res).get("tunnels", [])
+            if tunnels and tunnels[0].get("alloc"):
+                public_domain = tunnels[0]["alloc"].get("assigned_domain")
+                if public_domain:
+                    print(f"Tunnel allocated at: {public_domain}")
+                    break
+            print(f"Waiting for allocation... ({attempt + 1}/20)")
+
+        if not public_domain:
+            print("Tunnel allocation timed out after 60 seconds.")
+            return None
+
+        # 3. Map the tunnel to the local Minecraft port
+        update_res = requests.post(
+            f"{PLAYIT_API}/tunnels/update",
+            headers=_playit_headers(),
             json={
-                "config": {
-                    "ingress": [
-                        {
-                            "hostname": f"{subdomain}.{DOMAIN}",
-                            "service": f"tcp://localhost:{server_port}",
-                        },
-                        {"service": "http_status:404"},
-                    ]
-                }
+                "tunnel_id": tunnel_id,
+                "new_local_ip": "127.0.0.1",
+                "new_local_port": server_port,
+                "new_agent_id": None,
             },
         )
-        config_response.raise_for_status()
-        print(f"Ingress configured: {subdomain}.{DOMAIN} -> tcp://localhost:{server_port}")
+        _playit_result(update_res)
+        print(f"Tunnel mapped to 127.0.0.1:{server_port}")
 
-        # 3. Fetch the tunnel token so cloudflared can run without a credentials file
-        token_response = requests.get(
-            f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/token",
-            headers=headers,
-        )
-        token_response.raise_for_status()
-        tunnel_token = token_response.json()["result"]
-        print("Tunnel token retrieved")
-
-        # 4. Create the DNS CNAME record
-        dns_response = requests.post(
+        # 4. Add Cloudflare NS record: subdomain.DOMAIN -> ns1.playit-dns.com
+        #    This delegates DNS for the subdomain to playit, which serves the
+        #    SRV records Minecraft clients need to connect.
+        ns_res = requests.post(
             f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records",
-            headers=headers,
+            headers=_cf_headers(),
             json={
-                "type": "CNAME",
+                "type": "NS",
                 "name": subdomain,
-                "content": f"{tunnel_id}.cfargotunnel.com",
-                "ttl": 1,
-                "proxied": False,
+                "content": "ns1.playit-dns.com",
+                "ttl": 3600,
             },
         )
-        dns_response.raise_for_status()
-        print(f"DNS record created: {subdomain}.{DOMAIN}")
+        ns_res.raise_for_status()
+        print(f"NS record created: {subdomain}.{DOMAIN} -> ns1.playit-dns.com")
 
         return {
             "tunnel_id": tunnel_id,
-            "tunnel_token": tunnel_token,
             "tunnel_url": f"{subdomain}.{DOMAIN}",
         }
 
-    except requests.exceptions.RequestException as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
         print(f"Error creating tunnel: {e}")
-        if hasattr(e, "response") and e.response is not None:
+        if isinstance(e, requests.exceptions.RequestException) and hasattr(e, "response") and e.response is not None:
             print(f"Response: {e.response.text}")
         return None
 
 
-def delete_tunnel(tunnel_id):
-    """Delete all DNS records pointing to the tunnel, then delete the tunnel itself."""
-    headers = {"Authorization": f"Bearer {CF_API_TOKEN}"}
+def delete_tunnel(tunnel_id, subdomain=None):
+    """Delete the playit.gg tunnel and the Cloudflare NS delegation record."""
+    success = True
+
+    # 1. Delete the playit tunnel
     try:
-        # Remove DNS records first to avoid orphaned entries
-        dns_list = requests.get(
-            f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records",
-            headers=headers,
-            params={"content": f"{tunnel_id}.cfargotunnel.com"},
+        res = requests.post(
+            f"{PLAYIT_API}/tunnels/delete",
+            headers=_playit_headers(),
+            json={"tunnel_id": tunnel_id},
         )
-        dns_list.raise_for_status()
-        for record in dns_list.json().get("result", []):
-            requests.delete(
-                f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records/{record['id']}",
-                headers=headers,
-            )
-            print(f"DNS record deleted: {record['name']}")
-
-        # Delete the tunnel
-        response = requests.delete(
-            f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/cfd_tunnel/{tunnel_id}",
-            headers=headers,
-        )
-        response.raise_for_status()
+        res.raise_for_status()
         print(f"Tunnel {tunnel_id} deleted")
-        return True
-
     except requests.exceptions.RequestException as e:
-        print(f"Error deleting tunnel: {e}")
+        print(f"Error deleting playit tunnel: {e}")
         if hasattr(e, "response") and e.response is not None:
             print(f"Response: {e.response.text}")
-        return False
+        success = False
+
+    # 2. Delete the Cloudflare NS record for the subdomain
+    if subdomain:
+        try:
+            cf_auth = {"Authorization": f"Bearer {CF_API_TOKEN}"}
+            dns_list = requests.get(
+                f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records",
+                headers=cf_auth,
+                params={"type": "NS", "name": f"{subdomain}.{DOMAIN}"},
+            )
+            dns_list.raise_for_status()
+            for record in dns_list.json().get("result", []):
+                requests.delete(
+                    f"https://api.cloudflare.com/client/v4/zones/{ZONE_ID}/dns_records/{record['id']}",
+                    headers=cf_auth,
+                )
+                print(f"NS record deleted: {record['name']}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error deleting Cloudflare NS record: {e}")
+            success = False
+
+    return success
 
 
-def setup_and_run_tunnel(tunnel_token):
-    """Start cloudflared using the tunnel token — no credentials file or config file needed."""
-    log_dir = os.path.expanduser("~/.cloudflared/logs")
+def setup_and_run_tunnel():
+    """Start the playit agent — it connects all configured tunnels automatically."""
+    log_dir = os.path.expanduser("~/.playit/logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "cloudflared.log")
+    log_path = os.path.join(log_dir, "playit.log")
 
     try:
         log_file = open(log_path, "a")
         process = subprocess.Popen(
-            ["cloudflared", "tunnel", "run", "--token", tunnel_token],
+            ["playit", "--secret", PLAYIT_SECRET_KEY, "start"],
             stdout=log_file,
             stderr=log_file,
             start_new_session=True,
         )
-        # Wait briefly to detect immediate startup failures (bad token, network issue, etc.)
+        # Wait briefly to catch immediate failures (bad key, binary not found, etc.)
         time.sleep(3)
         if process.poll() is not None:
-            print(f"cloudflared exited immediately (exit code {process.returncode}).")
+            print(f"playit exited immediately (exit code {process.returncode}).")
             print(f"Check logs: {log_path}")
             return None
-        print(f"Tunnel started with PID: {process.pid} (logs: {log_path})")
+        print(f"playit agent started (PID: {process.pid}, logs: {log_path})")
         return process
     except FileNotFoundError:
-        print("cloudflared is not installed.")
-        print("Download it from: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print("playit is not installed.")
+        print("Download from: https://playit.gg/download")
         return None
