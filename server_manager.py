@@ -157,7 +157,6 @@ def provision_server(
                 "mem_min": mem_min,
                 "mem_max": mem_max,
                 "server_properties_port": server_port,
-                "executable_update_url": "https://jars.arcadiatech.org",
             },
         },
     }
