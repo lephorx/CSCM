@@ -182,5 +182,18 @@ if __name__ == "__main__":
     host  = os.getenv("FLASK_HOST", "0.0.0.0")
     port  = int(os.getenv("FLASK_PORT", 5000))
     debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+
+    ssl_cert = os.getenv("FLASK_SSL_CERT")
+    ssl_key  = os.getenv("FLASK_SSL_KEY")
+
+    if ssl_cert and ssl_key:
+        ssl_context = (ssl_cert, ssl_key)
+        log.info("TLS enabled: cert=%s key=%s", ssl_cert, ssl_key)
+    else:
+        ssl_context = None
+        log.warning(
+            "TLS is disabled — set FLASK_SSL_CERT and FLASK_SSL_KEY to enable HTTPS"
+        )
+
     log.info("Starting CSCM API on %s:%d (debug=%s)", host, port, debug)
-    app.run(host=host, port=port, debug=debug)
+    app.run(host=host, port=port, debug=debug, ssl_context=ssl_context)
