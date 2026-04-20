@@ -47,7 +47,7 @@ def create_dns_record(subdomain: str, target: str, proxied: bool = False) -> str
 
     try:
         response = requests.post(
-            f"{_CF_BASE}/zones/{CLOUDFLARE_ZONE_ID}/dns_records",
+            f"{_CF_BASE}/zones/{zone_id}/dns_records",
             headers=headers,
             json=payload,
         )
