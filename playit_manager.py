@@ -8,8 +8,206 @@ import asyncio
 import os
 import sys
 from dotenv import load_dotenv
-from pyppeteer import launch
-from pyppeteer.errors import TimeoutError as PyppeteerTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+
+# Load environment variables
+load_dotenv()
+
+# Configuration
+PLAYIT_EMAIL = os.getenv("PLAYIT_EMAIL")
+PLAYIT_PASSWORD = os.getenv("PLAYIT_PASSWORD")
+TUNNEL_NAME = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
+TUNNEL_PORT = os.getenv("TUNNEL_PORT", "25565")
+
+TIMEOUT = 30000  # 30 seconds
+
+
+async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
+    """Create a PlayIT tunnel with the given name and local port.
+
+    Returns the allocated tunnel address (e.g. ``abc.mcjoin.link``) on
+    success, or ``None`` on failure.
+    """
+
+    if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
+        print("❌ Error: PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables required")
+        return None
+
+    headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
+
+    try:
+        async with async_playwright() as pw:
+            print("🚀 Launching browser...")
+            browser = await pw.chromium.launch(
+                headless=headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+
+            # Navigate to PlayIT
+            print("📍 Navigating to playit.gg...")
+            await page.goto("https://playit.gg", wait_until="load")
+            await asyncio.sleep(1)
+
+            # Click Sign In
+            print("🔐 Clicking Sign In...")
+            await page.click('a[href="/login"]')
+            await asyncio.sleep(1)
+
+            # Fill email
+            print(f"📧 Entering email: {PLAYIT_EMAIL}")
+            await page.fill('input[id="email"]', PLAYIT_EMAIL)
+            await asyncio.sleep(0.5)
+
+            # Fill password
+            print("🔑 Entering password...")
+            await page.fill('input[id="password"]', PLAYIT_PASSWORD)
+            await asyncio.sleep(0.5)
+
+            # Click login button
+            print("✅ Clicking Login...")
+            await page.click('button[type="submit"]')
+
+            # Wait for dashboard to load after login
+            print("⏳ Waiting for dashboard...")
+            await page.wait_for_selector('span._11qktlo8', timeout=TIMEOUT)
+            await asyncio.sleep(1)
+
+            # Click Tunnels
+            print("🌐 Clicking Tunnels...")
+            await page.click('span._11qktlo8')
+            await asyncio.sleep(1)
+
+            # Wait for New Tunnel link to load
+            print("⏳ Waiting for Tunnels page...")
+            await page.wait_for_selector('a[href="/account/setup/new-tunnel"]', timeout=TIMEOUT)
+            await asyncio.sleep(0.5)
+
+            # Click New Tunnel
+            print("➕ Clicking New Tunnel...")
+            await page.click('a[href="/account/setup/new-tunnel"]')
+            await asyncio.sleep(1)
+
+            # Enter tunnel name
+            print(f"📝 Entering tunnel name: {tunnel_name}")
+            await page.fill('input[name="name"]', tunnel_name)
+            await asyncio.sleep(0.5)
+
+            # Click Next
+            print("➡️ Clicking Next (tunnel name)...")
+            await page.click('button[type="submit"]')
+            await asyncio.sleep(1)
+
+            # Click Minecraft Java
+            print("🎮 Selecting Minecraft Java...")
+            await page.click('div._15pr4g97')
+            await asyncio.sleep(1)
+
+            # Click Next
+            print("➡️ Clicking Next (tunnel type)...")
+            await page.click('button[type="submit"]')
+            await asyncio.sleep(1)
+
+            # Click Premium Network
+            print("🌟 Selecting Premium Network...")
+            await page.click('button.zrkgene')
+            await asyncio.sleep(1)
+
+            # Click Germany (find by text content)
+            print("🇩🇪 Selecting Germany / Europe...")
+            await page.evaluate("""
+                () => {
+                    const regions = Array.from(document.querySelectorAll('div._15pr4g9g'));
+                    const germanyRegion = regions.find(el => el.textContent.includes('Germany'));
+                    if (germanyRegion) germanyRegion.click();
+                }
+            """)
+            await asyncio.sleep(1)
+
+            # Click Next
+            print("➡️ Clicking Next (region)...")
+            await page.click('button.maeflab')
+            await asyncio.sleep(1)
+
+            # Click Agent s-ubumcr01
+            print("🤖 Selecting Agent s-ubumcr01...")
+            await page.click('div._15pr4g9v')
+            await asyncio.sleep(1)
+
+            # Click Next
+            print("➡️ Clicking Next (agent)...")
+            buttons = await page.query_selector_all('button.maeflab')
+            if buttons:
+                await buttons[-1].click()
+            await asyncio.sleep(1)
+
+            # Clear port field and enter port
+            print(f"🔌 Setting port to {tunnel_port}...")
+            await page.fill('input[placeholder="NULL"]', str(tunnel_port))
+            await asyncio.sleep(0.5)
+
+            # Click Next (submit port)
+            print("➡️ Clicking Next (port)...")
+            submit_buttons = await page.query_selector_all('button[type="submit"]')
+            if submit_buttons:
+                await submit_buttons[-1].click()
+            await asyncio.sleep(1)
+
+            # Click Create Tunnel
+            print("🚀 Clicking Create Tunnel...")
+            await page.click('button[type="submit"]')
+            await asyncio.sleep(2)
+
+            # Wait for tunnel address to load
+            print("⏳ Waiting for tunnel address allocation...")
+            await page.wait_for_function("""
+                () => {
+                    const el = document.querySelector('span.lm6flc4');
+                    return el && el.textContent.includes('.mcjoin.link') ? el.textContent.trim() : null;
+                }
+            """, timeout=TIMEOUT * 2)
+
+            address = await page.evaluate("""
+                () => document.querySelector('span.lm6flc4').textContent.trim()
+            """)
+
+            print(f"\n✅ SUCCESS!\n🎮 Tunnel Address: {address}")
+            print(f"📊 Type: Minecraft Java")
+            print(f"🌍 Region: Germany (Europe)")
+            print(f"🤖 Agent: s-ubumcr01 (Premium)")
+            print(f"🔌 Port: {tunnel_port}\n")
+
+            await browser.close()
+            return address
+
+    except PlaywrightTimeoutError:
+        print("❌ Timeout: Page load took too long")
+        return None
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+async def main():
+    """Standalone entry point — uses environment variables."""
+    result = await create_tunnel(
+        tunnel_name=TUNNEL_NAME,
+        tunnel_port=TUNNEL_PORT,
+    )
+    if result is None:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
 
 # Load environment variables
 load_dotenv()
