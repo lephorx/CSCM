@@ -4,7 +4,6 @@ import urllib3
 from dotenv import load_dotenv
 import psycopg2
 from datetime import datetime
-from cloudflare_tunnel_manager import create_tunnel, delete_tunnel, setup_and_run_tunnel
 
 load_dotenv()
 
@@ -69,23 +68,6 @@ def create_server(token, server_name="Example name", server_type="paper", versio
     db_server_id = None
     tunnel_info = None
 
-    def rollback(reason):
-        print(f"\nRolling back: {reason}")
-        if tunnel_info:
-            subdomain = tunnel_info["tunnel_url"].split(".")[0]
-            delete_tunnel(tunnel_info["tunnel_id"], subdomain)
-        if db_server_id:
-            try:
-                cursor.execute("DELETE FROM cloudflare_tunnels WHERE serverId = %s", (db_server_id,))
-                cursor.execute("DELETE FROM servers WHERE id = %s", (db_server_id,))
-                connection.commit()
-                print("DB entries removed")
-            except psycopg2.Error as db_err:
-                print(f"DB rollback error: {db_err}")
-                connection.rollback()
-        if crafty_server_id:
-            delete_crafty_server(crafty_server_id, headers)
-
     # Step 1: Create Crafty server
     data = {
         "name": server_name,
@@ -126,43 +108,13 @@ def create_server(token, server_name="Example name", server_type="paper", versio
         connection.commit()
         cursor.execute("SELECT id FROM servers WHERE name = %s", (server_name,))
         db_server_id = cursor.fetchone()[0]
+        print("Server inserted into database with ID:", db_server_id)
     except psycopg2.Error as e:
         print(f"Database error: {e}")
         connection.rollback()
-        rollback("DB insert failed")
         return
-
-    # Step 3: Create Cloudflare tunnel
-    tunnel_info = create_tunnel(f"mc-{subdomain}", server_port, subdomain)
-    if not tunnel_info:
-        rollback("Cloudflare tunnel creation failed")
-        return
-
-    # Step 4: Insert tunnel into DB
-    try:
-        cursor.execute(
-            "INSERT INTO cloudflare_tunnels (serverId, tunnelName, tunnelId, tunnelUrl, status) VALUES (%s, %s, %s, %s, %s)",
-            (db_server_id, f"mc-{subdomain}", tunnel_info["tunnel_id"], tunnel_info["tunnel_url"], "active"),
-        )
-        connection.commit()
-        print(f"Tunnel linked to server: {tunnel_info['tunnel_url']}")
-    except psycopg2.Error as e:
-        print(f"Database error: {e}")
-        connection.rollback()
-        rollback("DB tunnel insert failed")
-        return
-
-    # Step 5: Start playit agent
-    print("\nStarting playit agent...")
-    tunnel_process = setup_and_run_tunnel()
-    if not tunnel_process:
-        rollback("cloudflared failed to start or exited immediately")
-        return
-
-    print(f"✓ Tunnel is running!")
-    print(f"✓ Connect to: {tunnel_info['tunnel_url']}")
 
 if __name__ == "__main__":
     token = login()
     if token:
-        create_server(token)
+        create_server(token) 
