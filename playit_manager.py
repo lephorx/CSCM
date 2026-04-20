@@ -36,9 +36,18 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
 
     browser = None
     try:
-        # Launch browser
-        print("aunching browser...")
-        browser = await launch(headless=False, args=["--no-sandbox"])
+        # Launch browser (headless by default; set PLAYIT_HEADLESS=false to show)
+        headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
+        print("🚀 Launching browser...")
+        browser = await launch(
+            headless=headless,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage",
+            ],
+        )
         page = await browser.newPage()
         await page.setViewport({"width": 1280, "height": 720})
         
