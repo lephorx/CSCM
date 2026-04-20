@@ -73,22 +73,18 @@ def create_server(token, server_name="Example name", server_type="paper", versio
         
         print(f"Server created: {response.json()}")
         
-        # Insert into DB
         cursor.execute(
             "INSERT INTO servers (name, type, version, serverPort, createdAt) VALUES (%s, %s, %s, %s, %s)",
             (server_name, server_type, version, server_port, datetime.now())
         )
         connection.commit()
         
-        # Get server ID
         cursor.execute("SELECT id FROM servers WHERE name = %s", (server_name,))
         server_id = cursor.fetchone()[0]
         
-        # Create Cloudflare tunnel
         tunnel_info = create_tunnel(f"mc-{subdomain}", server_port, subdomain)
         
         if tunnel_info:
-            # Insert tunnel into DB
             cursor.execute(
                 "INSERT INTO cloudflare_tunnels (serverId, tunnelName, tunnelId, tunnelUrl, status) VALUES (%s, %s, %s, %s, %s)",
                 (server_id, f"mc-{subdomain}", tunnel_info['tunnel_id'], tunnel_info['tunnel_url'], 'active')
@@ -96,7 +92,6 @@ def create_server(token, server_name="Example name", server_type="paper", versio
             connection.commit()
             print(f"Tunnel created and linked to server: {tunnel_info['tunnel_url']}")
             
-            # Start tunnel
             print(f"\nStarting cloudflared tunnel...")
             tunnel_process = setup_and_run_tunnel(tunnel_info['tunnel_id'], server_port, subdomain)
             
