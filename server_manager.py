@@ -170,17 +170,23 @@ def provision_server(
             headers=headers,
             verify=False,
         )
-        r.raise_for_status()
         data = r.json()
-        if data.get("status") != "ok":
-            error_detail = data.get("error_data") or data.get("error") or r.text
-            log.error("Crafty rejected server creation: %s", error_detail)
-            return {"success": False, "message": f"Crafty server creation failed: {error_detail}"}
-        crafty_server_id = data["data"]["new_server_id"]
-        log.info("Crafty server created: crafty_id=%s", crafty_server_id)
     except requests.exceptions.RequestException as exc:
-        log.error("Crafty server creation failed: %s", exc)
+        log.error("Crafty server creation request failed: %s", exc)
         return {"success": False, "message": f"Crafty server creation failed: {exc}"}
+    except ValueError as exc:
+        log.error("Crafty returned non-JSON response (HTTP %d): %s", r.status_code, r.text[:200])
+        return {"success": False, "message": "Crafty returned an unexpected response"}
+
+    # Crafty sometimes returns a non-2xx status but still creates the server and
+    # includes new_server_id in the body (known Crafty behaviour during jar download).
+    crafty_server_id = (data.get("data") or {}).get("new_server_id")
+    if crafty_server_id:
+        log.info("Crafty server created: crafty_id=%s (HTTP %d)", crafty_server_id, r.status_code)
+    else:
+        error_detail = data.get("error_data") or data.get("error") or r.text
+        log.error("Crafty server creation failed (HTTP %d): %s", r.status_code, error_detail)
+        return {"success": False, "message": f"Crafty server creation failed: {error_detail}"}
 
     # Step 3: Persist server record
     db_server_id = None
