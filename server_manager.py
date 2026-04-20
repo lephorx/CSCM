@@ -28,7 +28,7 @@ import psycopg2
 from datetime import datetime
 from dotenv import load_dotenv
 
-from playit_manager import create_tunnel
+from playit_manager import create_tunnel, delete_tunnel
 from cloudflare_manager import (
     create_dns_record,
     create_srv_record,
@@ -315,6 +315,12 @@ def deprovision_server(db_server_id: int) -> dict:
             (db_server_id,),
         )
         dns_rows = cur.fetchall()
+
+        cur.execute(
+            "SELECT tunnel_name FROM playit_tunnels WHERE server_id = %s",
+            (db_server_id,),
+        )
+        tunnel_rows = cur.fetchall()
     except psycopg2.Error as exc:
         log.error("Database error while fetching server record: %s", exc)
         return {"success": False, "message": f"Database error: {exc}"}
@@ -341,6 +347,13 @@ def deprovision_server(db_server_id: int) -> dict:
             log.warning("Skipping Crafty deletion — authentication failed")
     else:
         log.debug("No Crafty ID stored for db_id=%d, skipping Crafty deletion", db_server_id)
+
+    # Delete PlayIT tunnels
+    for (tunnel_name,) in tunnel_rows:
+        log.info("Deleting PlayIT tunnel: name=%s", tunnel_name)
+        success = asyncio.run(delete_tunnel(tunnel_name))
+        if not success:
+            log.warning("Could not delete PlayIT tunnel '%s' — may need manual removal", tunnel_name)
 
     # Delete Cloudflare DNS records
     for cf_id, name in dns_rows:

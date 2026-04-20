@@ -2,9 +2,14 @@
 """
 PlayIT tunnel automation module.
 
-Drives a headless Chromium browser to log into playit.gg and create a
-new Minecraft Java tunnel for a given local port.  Returns the allocated
-public tunnel address (e.g. ``abc.deu.mcjoin.link``) on success.
+Drives a headless Chromium browser to log into playit.gg and manage tunnels.
+
+Public functions:
+    create_tunnel(tunnel_name, tunnel_port) -> str | None
+        Provision a new Minecraft Java tunnel and return its public address.
+
+    delete_tunnel(tunnel_name) -> bool
+        Delete an existing tunnel by its display name.
 """
 
 import asyncio
@@ -63,25 +68,10 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             )
             page = await browser.new_page(viewport={"width": 1280, "height": 720})
 
-            log.debug("Navigating to playit.gg")
-            await page.goto("https://playit.gg", wait_until="load")
-            await asyncio.sleep(1)
+            if not await _login(page):
+                await browser.close()
+                return None
 
-            log.debug("Opening login page")
-            await page.click('a[href="/login"]')
-            await asyncio.sleep(1)
-
-            log.debug("Entering credentials")
-            await page.fill('input[id="email"]', PLAYIT_EMAIL)
-            await asyncio.sleep(0.5)
-            await page.fill('input[id="password"]', PLAYIT_PASSWORD)
-            await asyncio.sleep(0.5)
-
-            log.info("Submitting login form")
-            await page.click('button[type="submit"]')
-
-            log.debug("Waiting for dashboard")
-            await page.wait_for_selector('span._11qktlo8', timeout=TIMEOUT)
             await asyncio.sleep(1)
 
             log.debug("Navigating to Tunnels section")
@@ -173,6 +163,136 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
     except Exception as exc:
         log.exception("Unexpected error during tunnel creation: %s", exc)
         return None
+
+
+async def _login(page) -> bool:
+    """Navigate to playit.gg and authenticate.
+
+    Args:
+        page: A Playwright Page instance.
+
+    Returns:
+        ``True`` on successful login, ``False`` on failure.
+    """
+    log.debug("Navigating to playit.gg")
+    await page.goto("https://playit.gg", wait_until="load")
+    await asyncio.sleep(1)
+
+    log.debug("Opening login page")
+    await page.click('a[href="/login"]')
+    await asyncio.sleep(1)
+
+    log.debug("Entering credentials")
+    await page.fill('input[id="email"]', PLAYIT_EMAIL)
+    await asyncio.sleep(0.5)
+    await page.fill('input[id="password"]', PLAYIT_PASSWORD)
+    await asyncio.sleep(0.5)
+
+    log.info("Submitting login form")
+    await page.click('button[type="submit"]')
+
+    try:
+        await page.wait_for_selector('span._11qktlo8', timeout=TIMEOUT)
+        log.debug("Login successful")
+        return True
+    except PlaywrightTimeoutError:
+        log.error("Login failed — dashboard did not appear within timeout")
+        return False
+
+
+async def delete_tunnel(tunnel_name: str) -> bool:
+    """Delete an existing PlayIT tunnel by its display name.
+
+    Navigates the playit.gg dashboard to find the tunnel with the given name,
+    then triggers the delete flow: tunnel detail -> options menu -> delete
+    button -> confirmation dialog.
+
+    Args:
+        tunnel_name: The exact display name of the tunnel to delete
+                     (case-sensitive, as shown in the dashboard).
+
+    Returns:
+        ``True`` if the tunnel was deleted, ``False`` on failure.
+    """
+    if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
+        log.error("PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables are required")
+        return False
+
+    headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
+    log.info("Deleting PlayIT tunnel: name=%s", tunnel_name)
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+
+            # Authenticate
+            if not await _login(page):
+                await browser.close()
+                return False
+
+            await asyncio.sleep(1)
+
+            # Navigate to Tunnels list
+            log.debug("Opening Tunnels list")
+            await page.click('span._11qktlo8')
+            await asyncio.sleep(1)
+
+            # Find and click the tunnel link by its display name
+            log.debug("Locating tunnel: %s", tunnel_name)
+            tunnel_link = await page.wait_for_function(
+                f"""
+                () => {{
+                    const links = Array.from(document.querySelectorAll('a._17i11qw1'));
+                    return links.find(el => el.textContent.includes({repr(tunnel_name)})) || null;
+                }}
+                """,
+                timeout=TIMEOUT,
+            )
+            if not tunnel_link:
+                log.error("Tunnel not found in dashboard: %s", tunnel_name)
+                await browser.close()
+                return False
+
+            await tunnel_link.click()
+            await asyncio.sleep(1)
+
+            # Open the options menu (list-ul icon button)
+            log.debug("Opening options menu")
+            await page.wait_for_selector('button.maeflab.maefla8', timeout=TIMEOUT)
+            await page.click('button.maeflab.maefla8')
+            await asyncio.sleep(0.5)
+
+            # Click Delete in the dropdown
+            log.debug("Clicking Delete option")
+            delete_option = await page.wait_for_selector('button._6axz482', timeout=TIMEOUT)
+            await delete_option.click()
+            await asyncio.sleep(0.5)
+
+            # Confirm deletion in the dialog
+            log.debug("Confirming deletion")
+            confirm_btn = await page.wait_for_selector('button.maeflaa.maefla8', timeout=TIMEOUT)
+            await confirm_btn.click()
+            await asyncio.sleep(1)
+
+            log.info("Tunnel deleted successfully: name=%s", tunnel_name)
+            await browser.close()
+            return True
+
+    except PlaywrightTimeoutError:
+        log.error("Tunnel deletion timed out waiting for a page element")
+        return False
+    except Exception as exc:
+        log.exception("Unexpected error during tunnel deletion: %s", exc)
+        return False
 
 
 async def _main() -> None:

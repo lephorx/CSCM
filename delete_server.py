@@ -14,6 +14,7 @@ Usage:
     python delete_server.py          # prompts interactively
 """
 
+import asyncio
 import os
 import sys
 import requests
@@ -21,6 +22,7 @@ import urllib3
 import psycopg2
 from dotenv import load_dotenv
 
+from playit_manager import delete_tunnel
 from cloudflare_manager import delete_dns_record_by_id
 from logger import get_logger
 
@@ -147,7 +149,7 @@ def delete_server(db_server_id: int) -> None:
 
     # Step 1: Delete Crafty server
     print()
-    log.info("[1/3] Deleting Crafty server")
+    log.info("[1/4] Deleting Crafty server")
     if crafty_server_id:
         token = crafty_login()
         if token:
@@ -157,8 +159,23 @@ def delete_server(db_server_id: int) -> None:
     else:
         log.debug("No Crafty ID on record, skipping Crafty deletion")
 
-    # Step 2: Delete Cloudflare DNS records
-    log.info("[2/3] Deleting Cloudflare DNS records")
+    # Step 2: Delete PlayIT tunnels
+    log.info("[2/4] Deleting PlayIT tunnels")
+    if tunnel_rows:
+        for t in tunnel_rows:
+            tunnel_name = t[0]
+            log.debug("Deleting tunnel: name=%s", tunnel_name)
+            success = asyncio.run(delete_tunnel(tunnel_name))
+            if not success:
+                log.warning(
+                    "Could not delete PlayIT tunnel '%s' — may need manual removal",
+                    tunnel_name,
+                )
+    else:
+        log.debug("No PlayIT tunnels on record for db_id=%d", db_server_id)
+
+    # Step 3: Delete Cloudflare DNS records
+    log.info("[3/4] Deleting Cloudflare DNS records")
     if dns_rows:
         for _, name, _, _, cf_id in dns_rows:
             log.debug("Deleting record: name=%s, cf_id=%s", name, cf_id)
@@ -166,8 +183,8 @@ def delete_server(db_server_id: int) -> None:
     else:
         log.debug("No DNS records on record for db_id=%d", db_server_id)
 
-    # Step 3: Delete database entry
-    log.info("[3/3] Deleting database entry")
+    # Step 4: Delete database entry
+    log.info("[4/4] Deleting database entry")
     try:
         cursor.execute("DELETE FROM servers WHERE id = %s", (db_server_id,))
         connection.commit()
