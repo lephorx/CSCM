@@ -52,7 +52,6 @@ export function FileExplorer({ serverId }: Props) {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
@@ -134,29 +133,27 @@ export function FileExplorer({ serverId }: Props) {
     setMenu(null)
   }
 
+  function handleDownloadFolder(name: string) {
+    const folderPath = path === "/" ? `/${name}` : `${path}/${name}`
+    const url = api.files.downloadFolderUrl(serverId, folderPath)
+    window.open(url, "_blank", "noopener")
+    setMenu(null)
+  }
+
   async function uploadFiles(files: FileList | File[]) {
     const fileArr = Array.from(files)
     if (fileArr.length === 0) return
     setUploading(true)
-    setUploadProgress(0)
 
-    let done = 0
-    for (const file of fileArr) {
-      try {
-        await api.files.upload(serverId, file, path)
-        done++
-        setUploadProgress(Math.round((done / fileArr.length) * 100))
-      } catch (err) {
-        toast.error(
-          `Failed to upload ${file.name}: ${err instanceof Error ? err.message : "Unknown error"}`
-        )
-      }
+    try {
+      const res = await api.files.upload(serverId, fileArr, path)
+      toast.success(res?.message ?? `Uploaded ${fileArr.length} file(s)`)
+      loadDir(path)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Upload failed")
+    } finally {
+      setUploading(false)
     }
-
-    setUploading(false)
-    setUploadProgress(null)
-    toast.success(`Uploaded ${done}/${fileArr.length} file(s)`)
-    loadDir(path)
   }
 
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
@@ -204,11 +201,6 @@ export function FileExplorer({ serverId }: Props) {
         </nav>
 
         <div className="flex items-center gap-2">
-          {uploading && uploadProgress !== null && (
-            <span className="text-xs text-muted-foreground">
-              {uploadProgress}%
-            </span>
-          )}
           <Button
             size="sm"
             variant="outline"
@@ -329,7 +321,7 @@ export function FileExplorer({ serverId }: Props) {
             className="fixed z-[9999] min-w-36 border border-border bg-popover py-1 shadow-lg"
             style={{ top: menu.y, left: menu.x - 144 }}
           >
-            {menu.isFile && (
+            {menu.isFile ? (
               <button
                 role="menuitem"
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted"
@@ -337,6 +329,15 @@ export function FileExplorer({ serverId }: Props) {
               >
                 <Download className="size-3.5" />
                 Download
+              </button>
+            ) : (
+              <button
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted"
+                onClick={() => handleDownloadFolder(menu.name)}
+              >
+                <Download className="size-3.5" />
+                Download as .zip
               </button>
             )}
             <button

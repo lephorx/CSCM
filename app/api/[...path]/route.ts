@@ -38,6 +38,8 @@ async function proxy(req: NextRequest, segments: string[]) {
   const resHeaders = new Headers()
   const ct = upstream.headers.get("content-type")
   if (ct) resHeaders.set("content-type", ct)
+  const cd = upstream.headers.get("content-disposition")
+  if (cd) resHeaders.set("content-disposition", cd)
 
   return new NextResponse(upstream.body, {
     status: upstream.status,

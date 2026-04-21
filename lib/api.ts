@@ -91,9 +91,13 @@ export const api = {
       apiCall(`/servers/${id}/files?path=${encodePath(path)}`),
     downloadUrl: (id: number, path: string) =>
       `/api/servers/${id}/files/download?path=${encodePath(path)}`,
-    upload: async (id: number, file: File, path = "/") => {
+    downloadFolderUrl: (id: number, path: string) =>
+      `/api/servers/${id}/files/download-folder?path=${encodePath(path)}`,
+    upload: async (id: number, files: File[], path = "/") => {
       const formData = new FormData()
-      formData.append("file", file)
+      for (const file of files) {
+        formData.append("files", file)
+      }
       return fetch(`/api/servers/${id}/files/upload?path=${encodePath(path)}`, {
         method: "POST",
         body: formData,
