@@ -26,6 +26,9 @@ import {
 import type { FileEntry } from "@/lib/types"
 import { api } from "@/lib/api"
 
+// LocalEntry extends FileEntry with an optional `pending` flag for optimistic UI
+type LocalEntry = FileEntry & { pending?: boolean }
+
 interface Props {
   serverId: number
 }
@@ -47,11 +50,12 @@ function formatSize(bytes: number | null) {
 
 export function FileExplorer({ serverId }: Props) {
   const [path, setPath] = useState("/")
-  const [entries, setEntries] = useState<FileEntry[]>([])
+  const [entries, setEntries] = useState<LocalEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
@@ -114,12 +118,26 @@ export function FileExplorer({ serverId }: Props) {
   async function handleDelete() {
     if (!deleteTarget) return
     setDeleting(true)
+
+    // Optimistically remove the entry right away
+    const removed = entries.find((e) => {
+      const ep = path === "/" ? `/${e.name}` : `${path}/${e.name}`
+      return ep === deleteTarget
+    })
+    setEntries((prev) =>
+      prev.filter((e) => {
+        const ep = path === "/" ? `/${e.name}` : `${path}/${e.name}`
+        return ep !== deleteTarget
+      })
+    )
+    setDeleteTarget(null)
+
     try {
       await api.files.delete(serverId, deleteTarget)
-      toast.success("Deleted successfully")
-      setDeleteTarget(null)
-      loadDir(path)
+      toast.success(`"${removed?.name ?? deleteTarget}" deleted`)
     } catch (err) {
+      // Restore entry on failure
+      if (removed) setEntries((prev) => [...prev, removed])
       toast.error(err instanceof Error ? err.message : "Delete failed")
     } finally {
       setDeleting(false)
@@ -130,6 +148,7 @@ export function FileExplorer({ serverId }: Props) {
     const filePath = path === "/" ? `/${name}` : `${path}/${name}`
     const url = api.files.downloadUrl(serverId, filePath)
     window.open(url, "_blank", "noopener")
+    toast.info(`Downloading "${name}"…`)
     setMenu(null)
   }
 
@@ -137,6 +156,7 @@ export function FileExplorer({ serverId }: Props) {
     const folderPath = path === "/" ? `/${name}` : `${path}/${name}`
     const url = api.files.downloadFolderUrl(serverId, folderPath)
     window.open(url, "_blank", "noopener")
+    toast.info(`Preparing zip for "${name}"…`)
     setMenu(null)
   }
 
@@ -145,12 +165,28 @@ export function FileExplorer({ serverId }: Props) {
     if (fileArr.length === 0) return
     setUploading(true)
 
+    // Optimistically add ghost entries so the user sees them immediately
+    const placeholders: LocalEntry[] = fileArr.map((f) => ({
+      name: f.name,
+      type: "file",
+      size: f.size,
+      pending: true,
+    }))
+    setEntries((prev) => [...prev, ...placeholders])
+
+    const label =
+      fileArr.length === 1 ? `"${fileArr[0].name}"` : `${fileArr.length} files`
+
     try {
       const res = await api.files.upload(serverId, fileArr, path)
-      toast.success(res?.message ?? `Uploaded ${fileArr.length} file(s)`)
-      loadDir(path)
+      toast.success(res?.message ?? `Uploaded ${label}`)
+      loadDir(path) // Replace placeholders with real server data
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Upload failed")
+      // Remove ghost entries on failure
+      setEntries((prev) => prev.filter((e) => !e.pending))
+      toast.error(
+        `Failed to upload ${label}: ${err instanceof Error ? err.message : "Unknown error"}`
+      )
     } finally {
       setUploading(false)
     }
@@ -164,11 +200,20 @@ export function FileExplorer({ serverId }: Props) {
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     e.stopPropagation()
+    setDragOver(false)
     if (e.dataTransfer.files) uploadFiles(e.dataTransfer.files)
   }
 
   function handleDragOver(e: React.DragEvent) {
     e.preventDefault()
+    setDragOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent) {
+    // Only clear when leaving the drop zone entirely, not child elements
+    if (!dropZoneRef.current?.contains(e.relatedTarget as Node)) {
+      setDragOver(false)
+    }
   }
 
   return (
@@ -228,9 +273,10 @@ export function FileExplorer({ serverId }: Props) {
       {/* File list drop zone */}
       <div
         ref={dropZoneRef}
-        className="flex-1 overflow-y-auto"
+        className={`flex-1 overflow-y-auto transition-colors ${dragOver ? "bg-primary/5 ring-2 ring-primary/30 ring-inset" : ""}`}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
       >
         {loading ? (
           <div className="flex h-32 items-center justify-center">
@@ -253,24 +299,31 @@ export function FileExplorer({ serverId }: Props) {
 
                 return (
                   <li
-                    key={entry.name}
-                    className="group flex items-center gap-3 px-4 py-2 transition-colors hover:bg-muted/60"
+                    key={entry.pending ? `pending-${entry.name}` : entry.name}
+                    className={`group flex items-center gap-3 px-4 py-2 transition-colors hover:bg-muted/60 ${entry.pending ? "opacity-50" : ""}`}
                   >
                     {/* Icon + name */}
                     <button
                       className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                      disabled={!!entry.pending}
                       onDoubleClick={() => handleEntryClick(entry)}
                       onClick={() => {
                         if (entry.type === "directory") handleEntryClick(entry)
                       }}
                       aria-label={`${entry.type === "directory" ? "Open folder" : "File"}: ${entry.name}`}
                     >
-                      {entry.type === "directory" ? (
+                      {entry.pending ? (
+                        <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                      ) : entry.type === "directory" ? (
                         <Folder className="size-4 shrink-0 text-primary" />
                       ) : (
                         <File className="size-4 shrink-0 text-muted-foreground" />
                       )}
-                      <span className="truncate text-sm">{entry.name}</span>
+                      <span
+                        className={`truncate text-sm ${entry.pending ? "text-muted-foreground italic" : ""}`}
+                      >
+                        {entry.name}
+                      </span>
                     </button>
 
                     {/* Size */}
@@ -278,33 +331,35 @@ export function FileExplorer({ serverId }: Props) {
                       {formatSize(entry.size)}
                     </span>
 
-                    {/* Three-dot trigger */}
-                    <button
-                      className="flex size-6 items-center justify-center opacity-0 transition-all group-hover:opacity-100 hover:bg-muted"
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (menu?.name === entry.name) {
-                          setMenu(null)
-                          return
-                        }
-                        const rect = (
-                          e.currentTarget as HTMLElement
-                        ).getBoundingClientRect()
-                        setMenu({
-                          name: entry.name,
-                          entryPath,
-                          isFile: entry.type === "file",
-                          x: rect.right,
-                          y: rect.bottom + 4,
-                        })
-                      }}
-                      aria-label={`Actions for ${entry.name}`}
-                      aria-haspopup="true"
-                      aria-expanded={menu?.name === entry.name}
-                    >
-                      <MoreHorizontal className="size-3.5" />
-                    </button>
+                    {/* Three-dot trigger — hidden for pending entries */}
+                    {!entry.pending && (
+                      <button
+                        className="flex size-6 items-center justify-center opacity-0 transition-all group-hover:opacity-100 hover:bg-muted"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (menu?.name === entry.name) {
+                            setMenu(null)
+                            return
+                          }
+                          const rect = (
+                            e.currentTarget as HTMLElement
+                          ).getBoundingClientRect()
+                          setMenu({
+                            name: entry.name,
+                            entryPath,
+                            isFile: entry.type === "file",
+                            x: rect.right,
+                            y: rect.bottom + 4,
+                          })
+                        }}
+                        aria-label={`Actions for ${entry.name}`}
+                        aria-haspopup="true"
+                        aria-expanded={menu?.name === entry.name}
+                      >
+                        <MoreHorizontal className="size-3.5" />
+                      </button>
+                    )}
                   </li>
                 )
               })}
