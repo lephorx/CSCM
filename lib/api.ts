@@ -4,6 +4,14 @@ import type { CreateServerPayload } from "./types"
 // which runs server-side and injects the BEARER_TOKEN before forwarding to the backend.
 const API_BASE = "/api"
 
+// Encode each path segment but keep slashes so the backend receives e.g. path=/world/region
+// not path=%2Fworld%2Fregion
+const encodePath = (p: string) =>
+  p
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/")
+
 async function apiCall(endpoint: string, options: RequestInit = {}) {
   const isFormData = options.body instanceof FormData
 
@@ -58,19 +66,19 @@ export const api = {
   },
   files: {
     list: (id: number, path = "/") =>
-      apiCall(`/servers/${id}/files?path=${encodeURIComponent(path)}`),
+      apiCall(`/servers/${id}/files?path=${encodePath(path)}`),
     downloadUrl: (id: number, path: string) =>
-      `/api/servers/${id}/files/download?path=${encodeURIComponent(path)}`,
+      `/api/servers/${id}/files/download?path=${encodePath(path)}`,
     upload: async (id: number, file: File, path = "/") => {
       const formData = new FormData()
       formData.append("file", file)
-      return fetch(
-        `/api/servers/${id}/files/upload?path=${encodeURIComponent(path)}`,
-        { method: "POST", body: formData }
-      ).then((r) => r.json())
+      return fetch(`/api/servers/${id}/files/upload?path=${encodePath(path)}`, {
+        method: "POST",
+        body: formData,
+      }).then((r) => r.json())
     },
     delete: (id: number, path: string) =>
-      apiCall(`/servers/${id}/files/delete?path=${encodeURIComponent(path)}`, {
+      apiCall(`/servers/${id}/files/delete?path=${encodePath(path)}`, {
         method: "DELETE",
       }),
   },
