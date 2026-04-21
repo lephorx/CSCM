@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select"
 import { api } from "@/lib/api"
 import type { Server } from "@/lib/types"
+import { VersionPicker } from "@/components/VersionPicker"
 
 const RAM_OPTIONS = [
   { label: "No limit", value: "none" },
@@ -38,13 +39,36 @@ const RAM_OPTIONS = [
 const PORT_MIN = 1024
 const PORT_MAX = 65535
 
+// Ports reserved by the system, backend, or common services
+const BLOCKED_PORTS = new Set([
+  3000, // Next.js dev server
+  3001, // common dev
+  4000, // common dev
+  5000, // CSCM backend
+  5001, // CSCM backend alt
+  6000, // X11
+  8000, // common HTTP alt
+  8080, // common HTTP alt
+  8443, // common HTTPS alt
+  8888, // Jupyter
+  9000, // common dev
+  9090, // Prometheus
+  19132, // Bedrock default
+])
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: () => void
 }
 
-type PortStatus = "idle" | "checking" | "available" | "taken" | "invalid"
+type PortStatus =
+  | "idle"
+  | "checking"
+  | "available"
+  | "taken"
+  | "reserved"
+  | "invalid"
 
 export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
   const [serverTypes, setServerTypes] = useState<string[]>([
@@ -106,7 +130,8 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
 
     setPortStatus("checking")
     portDebounceRef.current = setTimeout(() => {
-      setPortStatus(usedPorts.has(port) ? "taken" : "available")
+      if (BLOCKED_PORTS.has(port)) setPortStatus("reserved")
+      else setPortStatus(usedPorts.has(port) ? "taken" : "available")
     }, 400)
 
     return () => {
@@ -126,6 +151,8 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
     const port = parseInt(form.port, 10)
     if (isNaN(port) || port < PORT_MIN || port > PORT_MAX)
       next.port = `Port must be between ${PORT_MIN} and ${PORT_MAX}`
+    if (BLOCKED_PORTS.has(port))
+      next.port = "This port is reserved by the system"
     if (portStatus === "taken") next.port = "This port is already in use"
     return next
   }
@@ -187,7 +214,10 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
           <DialogTitle>Create Server</DialogTitle>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4 py-2">
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-4 overflow-visible py-2"
+        >
           {/* Server Name */}
           <div className="space-y-1.5">
             <Label htmlFor="srv-name">Server Name</Label>
@@ -228,13 +258,10 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
           {/* Version */}
           <div className="space-y-1.5">
             <Label htmlFor="srv-version">Version</Label>
-            <Input
-              id="srv-version"
-              placeholder="1.20.1"
+            <VersionPicker
               value={form.version}
-              onChange={(e) => handleChange("version", e.target.value)}
+              onChange={(v) => handleChange("version", v)}
               disabled={loading}
-              aria-invalid={!!errors.version}
             />
             {errors.version && (
               <p className="text-xs text-destructive">{errors.version}</p>
@@ -281,6 +308,11 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
               <p className="flex items-center gap-1 text-xs text-destructive">
                 <XCircle className="size-3" />
                 Port already in use
+              </p>
+            ) : portStatus === "reserved" ? (
+              <p className="flex items-center gap-1 text-xs text-destructive">
+                <XCircle className="size-3" />
+                Reserved system port
               </p>
             ) : null}
           </div>
@@ -339,7 +371,10 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
             <Button
               type="submit"
               disabled={
-                loading || portStatus === "taken" || portStatus === "invalid"
+                loading ||
+                portStatus === "taken" ||
+                portStatus === "reserved" ||
+                portStatus === "invalid"
               }
               className="flex-1"
             >

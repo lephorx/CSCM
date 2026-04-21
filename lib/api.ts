@@ -109,5 +109,19 @@ export const api = {
       }),
   },
   serverTypes: () => apiCall("/server-types"),
+  versions: {
+    manifest: async () => {
+      const res = await fetch(
+        "https://launchermeta.mojang.com/mc/game/version_manifest.json",
+        { cache: "force-cache" }
+      )
+      if (!res.ok) throw new Error("Failed to fetch version manifest")
+      const data = await res.json()
+      return data.versions as {
+        id: string
+        type: "release" | "snapshot" | "old_beta" | "old_alpha"
+      }[]
+    },
+  },
   health: () => fetch("/health").then((r) => r.json()),
 }
