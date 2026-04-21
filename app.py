@@ -2,10 +2,17 @@
 Flask REST API for the CSCM (Crafty Server Creation Manager) Tool.
 
 Endpoints:
-    GET    /api/server-types        List supported Minecraft server types.
-    GET    /api/servers             List all provisioned servers.
-    POST   /api/servers             Provision a new server.
-    DELETE /api/servers/<id>        Deprovision a server by database ID.
+    GET    /api/server-types              List supported Minecraft server types.
+    GET    /api/servers                   List all provisioned servers.
+    POST   /api/servers                   Provision a new server.
+    DELETE /api/servers/<id>              Deprovision a server by database ID.
+    POST   /api/servers/<id>/start        Start a server.
+    POST   /api/servers/<id>/stop         Stop a server.
+    POST   /api/servers/<id>/restart      Restart a server.
+    POST   /api/servers/<id>/kill         Force-kill a server.
+    POST   /api/servers/<id>/command      Send a console command to a server.
+    GET    /api/servers/<id>/stats        Get a server's live stats.
+    GET    /api/servers/<id>/logs         Get a server's console logs.
 
 Authentication:
     All endpoints require an ``Authorization: Bearer <token>`` header when the
@@ -21,11 +28,19 @@ Environment variables:
 """
 
 import os
-from flask import Flask, request, jsonify
+import requests
+import urllib3
+from pathlib import Path
+from flask import Flask, request, jsonify, send_file
 from dotenv import load_dotenv
 
-from server_manager import provision_server, deprovision_server, list_servers, SERVER_TYPES
+from server_manager import (
+    provision_server, deprovision_server, list_servers, SERVER_TYPES,
+    crafty_login, _get_db,
+)
 from logger import get_logger, configure as configure_log
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 load_dotenv()
 configure_log()
@@ -190,6 +205,310 @@ def delete_server(server_id: int):
         return jsonify(result), 404
     log.error("Server deletion failed: %s", result.get("message"))
     return jsonify(result), 500
+
+
+_base_url = os.getenv("BASE_URL", "https://localhost:8443")
+_crafty_servers_dir = Path(os.getenv(
+    "CRAFTY_SERVERS_DIR",
+    "/var/opt/minecraft/crafty/crafty-4/servers",
+))
+
+
+def _crafty_request(method: str, path: str, **kwargs):
+    """Make an authenticated request to the Crafty API."""
+    token = crafty_login()
+    if not token:
+        return None, "Could not authenticate with Crafty Controller"
+    try:
+        r = requests.request(
+            method,
+            f"{_base_url}{path}",
+            headers={"Authorization": f"Bearer {token}"},
+            verify=False,
+            **kwargs, 
+        )
+        return r, None
+    except requests.exceptions.RequestException as exc:
+        return None, str(exc)
+
+
+def _get_crafty_id(db_server_id: int):
+    """Look up the Crafty server UUID for a given database server ID."""
+    import psycopg2
+    try:
+        conn = _get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT craftyid FROM servers WHERE id = %s", (db_server_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except psycopg2.Error:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/start
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/start", methods=["POST"])
+def start_server(server_id: int):
+    """Start a provisioned server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    r, err = _crafty_request("POST", f"/api/v2/servers/{crafty_id}/action/start_server")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "message": "Start command sent" if r.ok else r.text}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/stop
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/stop", methods=["POST"])
+def stop_server(server_id: int):
+    """Gracefully stop a provisioned server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    r, err = _crafty_request("POST", f"/api/v2/servers/{crafty_id}/action/stop_server")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "message": "Stop command sent" if r.ok else r.text}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/restart
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/restart", methods=["POST"])
+def restart_server(server_id: int):
+    """Restart a provisioned server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    r, err = _crafty_request("POST", f"/api/v2/servers/{crafty_id}/action/restart_server")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "message": "Restart command sent" if r.ok else r.text}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/kill
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/kill", methods=["POST"])
+def kill_server(server_id: int):
+    """Force-kill a provisioned server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    r, err = _crafty_request("POST", f"/api/v2/servers/{crafty_id}/action/kill_server")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "message": "Kill command sent" if r.ok else r.text}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/command
+# Body: { "command": "say Hello" }
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/command", methods=["POST"])
+def send_command(server_id: int):
+    """Send a console command to a running server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    body = request.get_json(silent=True) or {}
+    command = body.get("command", "").strip()
+    if not command:
+        return jsonify({"success": False, "message": "'command' is required"}), 400
+    r, err = _crafty_request(
+        "POST",
+        f"/api/v2/servers/{crafty_id}/stdin",
+        json={"data": command},
+    )
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "message": "Command sent" if r.ok else r.text}), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/servers/<id>/stats
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/stats", methods=["GET"])
+def server_stats(server_id: int):
+    """Get live stats for a server (running state, player count, CPU/RAM)."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    r, err = _crafty_request("GET", f"/api/v2/servers/{crafty_id}/stats")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "data": r.json().get("data", {})}), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/servers/<id>/logs
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/logs", methods=["GET"])
+def server_logs(server_id: int):
+    """Get console log output for a server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    r, err = _crafty_request("GET", f"/api/v2/servers/{crafty_id}/logs")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    return jsonify({"success": r.ok, "data": r.json().get("data", [])}), 200
+
+
+def _server_dir(crafty_id: str, rel_path: str = "") -> Path | None:
+    """Resolve a path inside a server's directory, guarding against traversal."""
+    base = (_crafty_servers_dir / crafty_id).resolve()
+    target = (base / rel_path).resolve() if rel_path else base
+    if not str(target).startswith(str(base)):
+        return None  # path traversal attempt
+    return target
+
+
+# ---------------------------------------------------------------------------
+# GET /api/servers/<id>/files?path=subdir/...
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/files", methods=["GET"])
+def list_files(server_id: int):
+    """List files and directories inside a server's folder."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    rel_path = request.args.get("path", "")
+    target = _server_dir(crafty_id, rel_path)
+    if target is None:
+        return jsonify({"success": False, "message": "Invalid path"}), 400
+    if not target.exists():
+        return jsonify({"success": False, "message": "Path does not exist"}), 404
+    if not target.is_dir():
+        return jsonify({"success": False, "message": "Path is not a directory"}), 400
+
+    entries = []
+    for entry in sorted(target.iterdir(), key=lambda e: (e.is_file(), e.name)):
+        entries.append({
+            "name": entry.name,
+            "type": "file" if entry.is_file() else "directory",
+            "size": entry.stat().st_size if entry.is_file() else None,
+        })
+    return jsonify({"success": True, "path": rel_path or "/", "entries": entries}), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/servers/<id>/files/download?path=file.txt
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/files/download", methods=["GET"])
+def download_file(server_id: int):
+    """Download a file from a server's folder."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    rel_path = request.args.get("path", "")
+    if not rel_path:
+        return jsonify({"success": False, "message": "'path' query parameter is required"}), 400
+    target = _server_dir(crafty_id, rel_path)
+    if target is None:
+        return jsonify({"success": False, "message": "Invalid path"}), 400
+    if not target.exists() or not target.is_file():
+        return jsonify({"success": False, "message": "File not found"}), 404
+
+    return send_file(target, as_attachment=True, download_name=target.name)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/files/upload?path=subdir/...
+# Body: multipart/form-data with field "file"
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/files/upload", methods=["POST"])
+def upload_file(server_id: int):
+    """Upload a file into a server's folder (or subfolder via ?path=)."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"success": False, "message": "No file field in request"}), 400
+
+    upload = request.files["file"]
+    if not upload.filename:
+        return jsonify({"success": False, "message": "Empty filename"}), 400
+
+    # Sanitise filename — strip directory components
+    filename = Path(upload.filename).name
+    rel_path = request.args.get("path", "")
+    target_dir = _server_dir(crafty_id, rel_path)
+    if target_dir is None:
+        return jsonify({"success": False, "message": "Invalid path"}), 400
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / filename
+    upload.save(dest)
+    log.info("File uploaded: server_id=%d path=%s", server_id, dest)
+    return jsonify({"success": True, "message": f"Uploaded {filename}", "path": str(dest)}), 201
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/servers/<id>/files?path=file.txt
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/files/delete", methods=["DELETE"])
+def delete_file(server_id: int):
+    """Delete a file from a server's folder."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    rel_path = request.args.get("path", "")
+    if not rel_path:
+        return jsonify({"success": False, "message": "'path' query parameter is required"}), 400
+    target = _server_dir(crafty_id, rel_path)
+    if target is None:
+        return jsonify({"success": False, "message": "Invalid path"}), 400
+    if not target.exists():
+        return jsonify({"success": False, "message": "File not found"}), 404
+    if target.is_dir():
+        return jsonify({"success": False, "message": "Path is a directory, not a file"}), 400
+
+    target.unlink()
+    log.info("File deleted: server_id=%d path=%s", server_id, target)
+    return jsonify({"success": True, "message": f"Deleted {target.name}"}), 200
 
 
 if __name__ == "__main__":

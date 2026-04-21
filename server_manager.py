@@ -22,6 +22,7 @@ Deprovisioning sequence:
 
 import asyncio
 import os
+import time
 import requests
 import urllib3
 import psycopg2
@@ -156,6 +157,7 @@ def provision_server(
                 "mem_min": mem_min,
                 "mem_max": mem_max,
                 "server_properties_port": server_port,
+                "agree_to_eula": True,
             },
         },
     }
@@ -185,6 +187,22 @@ def provision_server(
         error_detail = data.get("error_data") or data.get("error") or r.text
         log.error("Crafty server creation failed (HTTP %d): %s", r.status_code, error_detail)
         return {"success": False, "message": f"Crafty server creation failed: {error_detail}"}
+
+    # Step 2b: Start the server
+    log.info("Waiting for Crafty to finish jar download before starting...")
+    time.sleep(15)
+    try:
+        r2 = requests.post(
+            f"{_base_url}/api/v2/servers/{crafty_server_id}/action/start_server",
+            headers=headers,
+            verify=False,
+        )
+        if r2.ok:
+            log.info("Crafty server start triggered: crafty_id=%s", crafty_server_id)
+        else:
+            log.warning("Crafty start returned HTTP %d: %s", r2.status_code, r2.text)
+    except requests.exceptions.RequestException as exc:
+        log.warning("Could not start Crafty server: %s", exc)
 
     # Step 3: Persist server record
     db_server_id = None
