@@ -1,21 +1,13 @@
 import type { CreateServerPayload } from "./types"
 
-// In the browser, always use the relative proxy path (/api/*) so requests
-// go through Next.js and never hit the backend directly (avoids CORS).
-// On the server (SSR/SSG) we call the backend directly with the bearer token.
-const IS_SERVER = typeof window === "undefined"
-
-const API_BASE = IS_SERVER
-  ? `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"}/api`
-  : "/api"
-
-const BEARER_TOKEN = process.env.BEARER_TOKEN ?? ""
+// All requests go to the local Next.js proxy route (/app/api/[...path]/route.ts)
+// which runs server-side and injects the BEARER_TOKEN before forwarding to the backend.
+const API_BASE = "/api"
 
 async function apiCall(endpoint: string, options: RequestInit = {}) {
   const isFormData = options.body instanceof FormData
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${BEARER_TOKEN}`,
     ...(options.headers as Record<string, string>),
   }
 
@@ -68,26 +60,13 @@ export const api = {
     list: (id: number, path = "/") =>
       apiCall(`/servers/${id}/files?path=${encodeURIComponent(path)}`),
     downloadUrl: (id: number, path: string) =>
-      `${
-        IS_SERVER
-          ? `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"}/api`
-          : "/api"
-      }/servers/${id}/files/download?path=${encodeURIComponent(path)}`,
+      `/api/servers/${id}/files/download?path=${encodeURIComponent(path)}`,
     upload: async (id: number, file: File, path = "/") => {
       const formData = new FormData()
       formData.append("file", file)
-      const uploadBase = IS_SERVER
-        ? `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"}/api`
-        : "/api"
-      const headers: Record<string, string> = {}
-      if (IS_SERVER) headers["Authorization"] = `Bearer ${BEARER_TOKEN}`
       return fetch(
-        `${uploadBase}/servers/${id}/files/upload?path=${encodeURIComponent(path)}`,
-        {
-          method: "POST",
-          headers,
-          body: formData,
-        }
+        `/api/servers/${id}/files/upload?path=${encodeURIComponent(path)}`,
+        { method: "POST", body: formData }
       ).then((r) => r.json())
     },
     delete: (id: number, path: string) =>
