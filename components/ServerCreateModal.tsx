@@ -1,7 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Loader2, Plus } from "lucide-react"
+import { useState, useEffect, useRef } from "react"
+import { Loader2, Plus, CheckCircle2, XCircle } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -21,16 +21,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
 import { api } from "@/lib/api"
+import type { Server } from "@/lib/types"
 
-const RAM_OPTIONS = ["512M", "1G", "2G", "4G", "8G", "16G", "32G"]
+const RAM_OPTIONS = [
+  { label: "No limit", value: "" },
+  { label: "512 MB", value: "512M" },
+  { label: "1 GB", value: "1G" },
+  { label: "2 GB", value: "2G" },
+  { label: "4 GB", value: "4G" },
+  { label: "8 GB", value: "8G" },
+  { label: "16 GB", value: "16G" },
+  { label: "32 GB", value: "32G" },
+]
+
+const PORT_MIN = 1024
+const PORT_MAX = 65535
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onCreated: () => void
 }
+
+type PortStatus = "idle" | "checking" | "available" | "taken" | "invalid"
 
 export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
   const [serverTypes, setServerTypes] = useState<string[]>([
@@ -41,7 +55,8 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
     "purpur",
   ])
   const [loading, setLoading] = useState(false)
-  const [modsEnabled, setModsEnabled] = useState(false)
+  const [usedPorts, setUsedPorts] = useState<Set<number>>(new Set())
+  const [portStatus, setPortStatus] = useState<PortStatus>("idle")
 
   const [form, setForm] = useState({
     name: "",
@@ -53,18 +68,51 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
   })
 
   const [errors, setErrors] = useState<Partial<typeof form>>({})
+  const portDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Load server types and existing ports when modal opens
   useEffect(() => {
+    if (!open) return
     api
       .serverTypes()
       .then((res) => {
         if (Array.isArray(res?.data)) setServerTypes(res.data)
         else if (Array.isArray(res)) setServerTypes(res)
       })
-      .catch(() => {
-        /* use defaults */
+      .catch(() => {})
+
+    api.servers
+      .list()
+      .then((res) => {
+        const list: Server[] = res?.servers ?? res?.data ?? res ?? []
+        setUsedPorts(new Set(list.map((s) => s.port)))
       })
-  }, [])
+      .catch(() => {})
+  }, [open])
+
+  // Debounced port availability check
+  useEffect(() => {
+    if (portDebounceRef.current) clearTimeout(portDebounceRef.current)
+    const port = parseInt(form.port, 10)
+
+    if (!form.port || isNaN(port)) {
+      setPortStatus("idle")
+      return
+    }
+    if (port < PORT_MIN || port > PORT_MAX) {
+      setPortStatus("invalid")
+      return
+    }
+
+    setPortStatus("checking")
+    portDebounceRef.current = setTimeout(() => {
+      setPortStatus(usedPorts.has(port) ? "taken" : "available")
+    }, 400)
+
+    return () => {
+      if (portDebounceRef.current) clearTimeout(portDebounceRef.current)
+    }
+  }, [form.port, usedPorts])
 
   function handleChange(field: keyof typeof form, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -76,8 +124,9 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
     if (!form.name.trim()) next.name = "Server name is required"
     if (!form.version.trim()) next.version = "Version is required"
     const port = parseInt(form.port, 10)
-    if (isNaN(port) || port < 1024 || port > 65535)
-      next.port = "Port must be between 1024 and 65535"
+    if (isNaN(port) || port < PORT_MIN || port > PORT_MAX)
+      next.port = `Port must be between ${PORT_MIN} and ${PORT_MAX}`
+    if (portStatus === "taken") next.port = "This port is already in use"
     return next
   }
 
@@ -91,14 +140,16 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
 
     setLoading(true)
     try {
-      await api.servers.create({
+      const payload: Parameters<typeof api.servers.create>[0] = {
         name: form.name.trim(),
         type: form.type,
         version: form.version.trim(),
         port: parseInt(form.port, 10),
-        mem_min: form.mem_min,
-        mem_max: form.mem_max,
-      })
+        ...(form.mem_min ? { mem_min: form.mem_min } : {}),
+        ...(form.mem_max ? { mem_max: form.mem_max } : {}),
+      }
+
+      await api.servers.create(payload)
       toast.success("Server created successfully")
       onOpenChange(false)
       onCreated()
@@ -111,6 +162,7 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
         mem_max: "2G",
       })
       setErrors({})
+      setPortStatus("idle")
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to create server"
@@ -119,6 +171,10 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
       setLoading(false)
     }
   }
+
+  const portNum = parseInt(form.port, 10)
+  const portOutOfRange =
+    !isNaN(portNum) && (portNum < PORT_MIN || portNum > PORT_MAX)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -138,12 +194,9 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
               onChange={(e) => handleChange("name", e.target.value)}
               disabled={loading}
               aria-invalid={!!errors.name}
-              aria-describedby={errors.name ? "srv-name-err" : undefined}
             />
             {errors.name && (
-              <p id="srv-name-err" className="text-xs text-destructive">
-                {errors.name}
-              </p>
+              <p className="text-xs text-destructive">{errors.name}</p>
             )}
           </div>
 
@@ -186,23 +239,46 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
 
           {/* Port */}
           <div className="space-y-1.5">
-            <Label htmlFor="srv-port">Port</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="srv-port">Port</Label>
+              <span className="text-xs text-muted-foreground">
+                {PORT_MIN}–{PORT_MAX}
+              </span>
+            </div>
             <Input
               id="srv-port"
               type="number"
-              min={1024}
-              max={65535}
+              min={PORT_MIN}
+              max={PORT_MAX}
               value={form.port}
               onChange={(e) => handleChange("port", e.target.value)}
               disabled={loading}
-              aria-invalid={!!errors.port}
-              aria-describedby={errors.port ? "srv-port-err" : undefined}
+              aria-invalid={!!errors.port || portStatus === "taken"}
             />
-            {errors.port && (
-              <p id="srv-port-err" className="text-xs text-destructive">
-                {errors.port}
+            {/* Port status feedback */}
+            {errors.port ? (
+              <p className="text-xs text-destructive">{errors.port}</p>
+            ) : portOutOfRange ? (
+              <p className="flex items-center gap-1 text-xs text-destructive">
+                <XCircle className="size-3" />
+                Must be between {PORT_MIN} and {PORT_MAX}
               </p>
-            )}
+            ) : portStatus === "checking" ? (
+              <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" />
+                Checking availability…
+              </p>
+            ) : portStatus === "available" ? (
+              <p className="flex items-center gap-1 text-xs text-emerald-600">
+                <CheckCircle2 className="size-3" />
+                Port available
+              </p>
+            ) : portStatus === "taken" ? (
+              <p className="flex items-center gap-1 text-xs text-destructive">
+                <XCircle className="size-3" />
+                Port already in use
+              </p>
+            ) : null}
           </div>
 
           {/* RAM */}
@@ -219,8 +295,8 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
                 </SelectTrigger>
                 <SelectContent>
                   {RAM_OPTIONS.map((r) => (
-                    <SelectItem key={r} value={r}>
-                      {r}
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -238,26 +314,13 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
                 </SelectTrigger>
                 <SelectContent>
                   {RAM_OPTIONS.map((r) => (
-                    <SelectItem key={r} value={r}>
-                      {r}
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-          </div>
-
-          {/* Mods/Plugins toggle */}
-          <div className="flex items-center justify-between py-1">
-            <Label htmlFor="srv-mods" className="cursor-pointer">
-              Enable mods / plugins
-            </Label>
-            <Switch
-              id="srv-mods"
-              checked={modsEnabled}
-              onCheckedChange={setModsEnabled}
-              disabled={loading}
-            />
           </div>
 
           <DialogFooter className="gap-2 pt-2">
@@ -269,7 +332,13 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={loading} className="flex-1">
+            <Button
+              type="submit"
+              disabled={
+                loading || portStatus === "taken" || portStatus === "invalid"
+              }
+              className="flex-1"
+            >
               {loading ? (
                 <Loader2 className="size-4 animate-spin" />
               ) : (

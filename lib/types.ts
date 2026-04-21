@@ -53,6 +53,6 @@ export interface CreateServerPayload {
   type: string
   version: string
   port: number
-  mem_min: string
-  mem_max: string
+  mem_min?: string
+  mem_max?: string
 }
