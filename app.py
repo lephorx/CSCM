@@ -62,6 +62,10 @@ def _authorize() -> tuple | None:
     """
     if not API_KEY:
         return None
+    # OPTIONS preflight requests must not be blocked — CORS headers are added
+    # by flask-cors after the response is built.
+    if request.method == "OPTIONS":
+        return None
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         log.warning(
             "Unauthorized request: method=%s path=%s remote=%s",
@@ -70,7 +74,7 @@ def _authorize() -> tuple | None:
         return jsonify({"error": "Unauthorized"}), 401
     return None
 
-
+g
 @app.before_request
 def _log_request() -> None:
     log.debug(
