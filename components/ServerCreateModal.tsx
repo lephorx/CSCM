@@ -25,7 +25,7 @@ import { api } from "@/lib/api"
 import type { Server } from "@/lib/types"
 
 const RAM_OPTIONS = [
-  { label: "No limit", value: "" },
+  { label: "No limit", value: "none" },
   { label: "512 MB", value: "512M" },
   { label: "1 GB", value: "1G" },
   { label: "2 GB", value: "2G" },
@@ -145,8 +145,12 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
         type: form.type,
         version: form.version.trim(),
         port: parseInt(form.port, 10),
-        ...(form.mem_min ? { mem_min: form.mem_min } : {}),
-        ...(form.mem_max ? { mem_max: form.mem_max } : {}),
+        ...(form.mem_min && form.mem_min !== "none"
+          ? { mem_min: form.mem_min }
+          : {}),
+        ...(form.mem_max && form.mem_max !== "none"
+          ? { mem_max: form.mem_max }
+          : {}),
       }
 
       await api.servers.create(payload)
