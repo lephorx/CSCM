@@ -1,52 +1,106 @@
-# CSCM-Tool
+# CSCM API Documentation
 
-**Crafty Server Creation Manager** — automated provisioning and deprovisioning of Minecraft game servers.
-
-When a server is created, CSCM-Tool:
-
-1. Creates the game server in **Crafty Controller**
-2. Creates a public **PlayIT tunnel** for the server port
-3. Resolves the external port via DNS SRV lookup
-4. Creates a **Cloudflare CNAME** and **SRV record** so players connect via subdomain
-
-Deprovisioning reverses every step in the correct order and cleans up all resources.
+**CSCM (Crafty Server Creation Manager)** is a REST API that provisions and manages Minecraft game servers end-to-end: it creates servers in Crafty Controller, sets up PlayIT tunnels for external access, and configures Cloudflare DNS records automatically.
 
 ---
 
 ## Table of Contents
 
-- [Prerequisites](#prerequisites)
+- [Base URL](#base-url)
+- [Authentication](#authentication)
+- [Error Format](#error-format)
 - [Installation](#installation)
-- [Environment Variables](#environment-variables)
-- [Database Setup](#database-setup)
-- [Running the API Server](#running-the-api-server)
-- [API Reference](#api-reference)
-  - [Authentication](#authentication)
-  - [GET /api/server-types](#get-apiserver-types)
-  - [GET /api/servers](#get-apiservers)
-  - [POST /api/servers](#post-apiservers)
-  - [DELETE /api/servers/:id](#delete-apiserversid)
-- [CLI Tools](#cli-tools)
-  - [main.py — Provision a server](#mainpy--provision-a-server)
-  - [delete_server.py — Deprovision a server](#delete_serverpy--deprovision-a-server)
-- [Logging](#logging)
+  - [Prerequisites](#prerequisites)
+  - [Native (no Docker)](#native-no-docker)
+  - [Docker](#docker)
+  - [Environment Variables](#environment-variables)
+- [Endpoints](#endpoints)
+  - [Health](#health)
+  - [Server Types](#server-types)
+  - [Servers — CRUD](#servers--crud)
+  - [Server Control](#server-control)
+  - [File Management](#file-management)
+- [Schemas](#schemas)
+- [Frontend Integration Guide](#frontend-integration-guide)
 
 ---
 
-## Prerequisites
+## Base URL
 
-| Requirement           | Notes                                                                         |
-| --------------------- | ----------------------------------------------------------------------------- |
-| Python 3.12+          | Tested on 3.12 and 3.13                                                       |
-| Crafty Controller 4.x | Reachable via HTTPS (self-signed cert is fine)                                |
-| PlayIT.gg account     | Email/password login                                                          |
-| Cloudflare account    | Zone with API token and write access                                          |
-| PostgreSQL database   | [Neon](https://neon.tech) (free tier works) or any Postgres instance with SSL |
-| Chromium              | Installed automatically by Playwright                                         |
+```
+http://<host>:5000
+```
+
+All API endpoints are prefixed with `/api`.
+
+---
+
+## Authentication
+
+Every endpoint (except `GET /` and `GET /health`) requires a static bearer token when `API_KEY` is configured in the environment.
+
+**Header:**
+
+```
+Authorization: Bearer <your_api_key>
+```
+
+**Example:**
+
+```
+Authorization: Bearer iNn6XZBucG6PoZb98qz3A9W9G
+```
+
+If `API_KEY` is not set, all requests are accepted without authentication (**development only — never do this in production**).
+
+**Unauthorized response:**
+
+```json
+HTTP 401
+{
+  "error": "Unauthorized"
+}
+```
+
+---
+
+## Error Format
+
+All errors return JSON with a consistent shape:
+
+```json
+{
+  "success": false,
+  "message": "Human-readable error description"
+}
+```
+
+Or for validation errors:
+
+```json
+{
+  "error": "'name' is required"
+}
+```
 
 ---
 
 ## Installation
+
+### Prerequisites
+
+| Requirement             | Version              |
+| ----------------------- | -------------------- |
+| Python                  | 3.12+                |
+| PostgreSQL (Neon)       | Any                  |
+| Crafty Controller       | 4.x (native install) |
+| PlayIT account          | playit.gg            |
+| Cloudflare account      | With a managed zone  |
+| Docker + Docker Compose | Optional             |
+
+---
+
+### Native (no Docker)
 
 ```bash
 # 1. Clone the repository
@@ -55,177 +109,168 @@ cd CSCM-Tool
 
 # 2. Create and activate a virtual environment
 python3 -m venv venv
-source venv/bin/activate          # macOS / Linux
-# .\venv\Scripts\activate         # Windows
+source venv/bin/activate
 
-# 3. Install Python dependencies
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Install the Playwright Chromium browser
+# 4. Install Playwright's Chromium browser
 playwright install chromium --with-deps
 
 # 5. Copy and fill in the environment file
-cp .env.example .env              # then edit .env with your values
+cp .env.example .env
+nano .env
+
+# 6. Start the API
+python app.py
 ```
 
 ---
 
-## Environment Variables
+### Docker
 
-Create a `.env` file in the project root (or export the variables directly).
+```bash
+# 1. Clone the repository
+git clone https://github.com/your-org/CSCM-Tool.git
+cd CSCM-Tool
 
-```dotenv
-# ── Crafty Controller ──────────────────────────────────────────────────────
-BASE_URL=https://localhost:8443       # Crafty base URL (no trailing slash)
-CRAFTY_USER=admin                     # Crafty admin username
-CRAFTY_PASS=changeme                  # Crafty admin password
+# 2. Fill in the environment file
+cp .env.example .env
+nano .env
 
-# ── Neon / PostgreSQL ──────────────────────────────────────────────────────
-DB_NAME=cscm
-DB_USER=cscmuser
-DB_PASSWORD=changeme
-DB_HOST=ep-example.us-east-2.aws.neon.tech
+# 3. Make sure BASE_URL points to the host (not localhost)
+# In .env:  BASE_URL=https://host.docker.internal:8443
+
+# 4. Build and start
+docker compose up -d --build
+
+# 5. View logs
+docker compose logs -f
+
+# 6. Stop
+docker compose down
+```
+
+The Crafty servers directory is mounted read-only inside the container at `/crafty/servers`. To enable file uploads and deletions, change `:ro` to `:rw` in `docker-compose.yml`.
+
+---
+
+### Environment Variables
+
+Create a `.env` file in the project root with the following variables:
+
+```env
+# ── CSCM API ──────────────────────────────────────────────────────────────────
+API_KEY=your_static_bearer_token          # Required in production
+FLASK_HOST=0.0.0.0                        # Bind address
+FLASK_PORT=5000                           # Listen port
+FLASK_DEBUG=false                         # Enable Flask debug mode
+LOG_LEVEL=INFO                            # DEBUG | INFO | WARNING | ERROR
+
+# ── Crafty Controller ─────────────────────────────────────────────────────────
+BASE_URL=https://localhost:8443           # Crafty base URL
+                                          # Use https://host.docker.internal:8443 in Docker
+CRAFTY_USER=admin                         # Crafty admin username
+CRAFTY_PASS=your_crafty_password          # Crafty admin password
+CRAFTY_SERVERS_DIR=/var/opt/minecraft/crafty/crafty-4/servers  # Server files root
+
+# ── Neon PostgreSQL ───────────────────────────────────────────────────────────
+DB_NAME=your_db_name
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+DB_HOST=your_neon_host.neon.tech
 DB_PORT=5432
 
-# ── PlayIT.gg ──────────────────────────────────────────────────────────────
-PLAYIT_EMAIL=you@example.com
-PLAYIT_PASSWORD=changeme
-PLAYIT_HEADLESS=true                  # set to false to watch the browser
+# ── PlayIT ────────────────────────────────────────────────────────────────────
+PLAYIT_EMAIL=your@email.com
+PLAYIT_PASSWORD=your_playit_password
+PLAYIT_HEADLESS=true                      # Set to false to watch the browser
 
-# ── Cloudflare ─────────────────────────────────────────────────────────────
-CLOUDFLARE_API_TOKEN=your_token_here
-CLOUDFLARE_ZONE_ID=your_zone_id_here
-CLOUDFLARE_BASE_DOMAIN=example.com    # e.g. homeops.services
-
-# ── Flask API ──────────────────────────────────────────────────────────────
-API_KEY=your_secret_token             # omit or leave blank to disable auth
-FLASK_HOST=0.0.0.0
-FLASK_PORT=5000
-FLASK_DEBUG=false
-
-# ── Logging ────────────────────────────────────────────────────────────────
-LOG_LEVEL=INFO                        # DEBUG | INFO | WARNING | ERROR
-```
-
-> **Cloudflare API token permissions required:** `Zone.DNS:Edit` for the target zone.
-
----
-
-## Database Setup
-
-Run the migration script against your PostgreSQL database once before first use:
-
-```bash
-psql "$DATABASE_URL" -f migration.sql
-```
-
-Or connect manually and run the contents of `migration.sql`. The script is idempotent (`IF NOT EXISTS` guards) so it is safe to re-run.
-
-The migration creates:
-
-| Table            | Purpose                                                 |
-| ---------------- | ------------------------------------------------------- |
-| `servers`        | Core server record; adds `craftyid` column if upgrading |
-| `playit_tunnels` | One row per PlayIT tunnel per server                    |
-| `dns_records`    | One row per Cloudflare DNS record per server            |
-
-Both child tables cascade-delete when the parent server row is removed.
-
----
-
-## Running the API Server
-
-```bash
-# Activate venv first if not already active
-source venv/bin/activate
-
-python app.py
-# INFO  api  Flask listening on 0.0.0.0:5000
-```
-
-To run in production behind a WSGI server:
-
-```bash
-pip install gunicorn
-gunicorn --workers 2 --bind 0.0.0.0:5000 "app:app"
+# ── Cloudflare ────────────────────────────────────────────────────────────────
+CLOUDFLARE_API_TOKEN=your_cf_api_token
+CLOUDFLARE_ZONE_ID=your_cf_zone_id
+CLOUDFLARE_DOMAIN=example.com            # Root domain (e.g. homeops.services)
 ```
 
 ---
 
-## API Reference
-
-### Authentication
-
-When `API_KEY` is set, every request must include the token in the `Authorization` header:
-
-```
-Authorization: Bearer <API_KEY>
-```
-
-Requests without a valid token receive `401 Unauthorized`. When `API_KEY` is not configured, authentication is disabled.
+## Endpoints
 
 ---
 
-### GET /api/server-types
+### Health
 
-Returns the list of supported Minecraft server flavours.
+#### `GET /`
 
-**Response**
+#### `GET /health`
+
+Simple health check. No authentication required.
+
+**Response `200`:**
 
 ```json
 {
-  "server_types": ["paper", "forge", "fabric", "vanilla", "spigot", "purpur"]
+  "status": "ok",
+  "message": "CSCM API is running"
 }
-```
-
-**Example**
-
-```bash
-curl http://localhost:5000/api/server-types \
-  -H "Authorization: Bearer $API_KEY"
 ```
 
 ---
 
-### GET /api/servers
+### Server Types
 
-Returns all provisioned servers with their linked tunnel and DNS details.
+#### `GET /api/server-types`
 
-**Response**
+Returns all supported Minecraft server flavours.
+
+**Response `200`:**
+
+```json
+{
+  "server_types": ["paper", "forge", "fabric", "vanilla", "purpur"]
+}
+```
+
+---
+
+### Servers — CRUD
+
+#### `GET /api/servers`
+
+Returns all servers provisioned through CSCM, including their PlayIT tunnels and Cloudflare DNS records.
+
+**Response `200`:**
 
 ```json
 {
   "servers": [
     {
-      "id": 1,
-      "name": "Survival SMP",
+      "id": 44,
+      "name": "Paper Server",
       "type": "paper",
-      "version": "1.21.4",
-      "port": 25565,
-      "crafty_id": "abc123",
-      "created_at": "2026-04-20T10:00:00",
+      "version": "1.18.2",
+      "port": 25581,
+      "crafty_id": "80734f9e-5d32-4b9c-a8a6-061887231cc6",
+      "created_at": "2026-04-21T08:55:23.123456",
       "tunnels": [
         {
-          "tunnel_name": "survival-smp",
-          "tunnel_address": "auto.playit.gg",
-          "local_port": 25565,
-          "external_port": 30712
+          "address": "single-washstand.deu.mcjoin.link",
+          "local_port": 25581,
+          "external_port": 5474
         }
       ],
       "dns_records": [
         {
           "type": "CNAME",
-          "name": "survival-smp.example.com",
-          "target": "auto.playit.gg",
-          "port": null,
-          "cf_id": "cf_record_id_1"
+          "name": "paper-server.homeops.services",
+          "target": "single-washstand.deu.mcjoin.link",
+          "port": null
         },
         {
           "type": "SRV",
-          "name": "_minecraft._tcp.survival-smp.example.com",
-          "target": "auto.playit.gg",
-          "port": 30712,
-          "cf_id": "cf_record_id_2"
+          "name": "_minecraft._tcp.paper-server.homeops.services",
+          "target": "single-washstand.deu.mcjoin.link",
+          "port": 5474
         }
       ]
     }
@@ -233,158 +278,538 @@ Returns all provisioned servers with their linked tunnel and DNS details.
 }
 ```
 
-**Example**
-
-```bash
-curl http://localhost:5000/api/servers \
-  -H "Authorization: Bearer $API_KEY"
-```
-
 ---
 
-### POST /api/servers
+#### `POST /api/servers`
 
-Provisions a full server stack: Crafty game server, PlayIT tunnel, and Cloudflare DNS records.
+Provisions a complete Minecraft server stack:
 
-**Request body** (JSON)
+1. Creates the server in Crafty Controller
+2. Starts the server and accepts the EULA
+3. Creates a PlayIT tunnel
+4. Creates Cloudflare CNAME + SRV DNS records
 
-| Field     | Type    | Required | Default  | Description                                                               |
-| --------- | ------- | -------- | -------- | ------------------------------------------------------------------------- |
-| `name`    | string  | yes      | —        | Server display name. Used as the subdomain slug.                          |
-| `type`    | string  | no       | `paper`  | Server flavour: `paper`, `forge`, `fabric`, `vanilla`, `spigot`, `purpur` |
-| `version` | string  | no       | `1.21.4` | Minecraft version                                                         |
-| `port`    | integer | no       | `25565`  | Local server port (1024–65535)                                            |
-| `mem_min` | integer | no       | `2`      | Minimum JVM heap in GB                                                    |
-| `mem_max` | integer | no       | `4`      | Maximum JVM heap in GB                                                    |
+> ⚠️ This operation takes **30–90 seconds** depending on jar download speed. For Forge servers, the first start runs the installer — it will take several minutes.
 
-**Response** `201 Created`
+**Request body (JSON):**
+
+| Field     | Type    | Required | Default  | Description                                                  |
+| --------- | ------- | -------- | -------- | ------------------------------------------------------------ |
+| `name`    | string  | ✅       | —        | Display name for the server                                  |
+| `type`    | string  | ❌       | `paper`  | Server type: `paper`, `forge`, `fabric`, `vanilla`, `purpur` |
+| `version` | string  | ❌       | `1.21.4` | Minecraft version string                                     |
+| `port`    | integer | ❌       | `25565`  | Local TCP port (1024–65535)                                  |
+| `mem_min` | integer | ❌       | `2`      | Minimum JVM heap in GB                                       |
+| `mem_max` | integer | ❌       | `4`      | Maximum JVM heap in GB                                       |
+
+**Example request:**
+
+```json
+{
+  "name": "Paper Server",
+  "type": "paper",
+  "version": "1.18.2",
+  "port": 25565,
+  "mem_min": 2,
+  "mem_max": 4
+}
+```
+
+**Response `201`:**
 
 ```json
 {
   "success": true,
-  "server_id": 1,
-  "connect_address": "survival-smp.example.com",
-  "external_port": 30712,
-  "message": "Server provisioned successfully"
+  "message": "Server provisioned successfully",
+  "server_id": 44,
+  "crafty_id": "80734f9e-5d32-4b9c-a8a6-061887231cc6",
+  "connect_address": "paper-server.homeops.services",
+  "tunnel_address": "single-washstand.deu.mcjoin.link",
+  "external_port": 5474
 }
 ```
 
-**Error responses**
+**Response `400` — Validation error:**
 
-| Status | Cause                                                                    |
-| ------ | ------------------------------------------------------------------------ |
-| `400`  | Missing `name`, invalid `type`, invalid `port`, or invalid memory values |
-| `500`  | Crafty, PlayIT, Cloudflare, or database error during provisioning        |
+```json
+{
+  "error": "'port' must be an integer between 1024 and 65535"
+}
+```
 
-**Example**
+**Response `500` — Provisioning error:**
 
-```bash
-curl -X POST http://localhost:5000/api/servers \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Survival SMP",
-    "type": "paper",
-    "version": "1.21.4",
-    "port": 25565,
-    "mem_min": 2,
-    "mem_max": 4
-  }'
+```json
+{
+  "success": false,
+  "message": "Crafty server creation failed: ..."
+}
 ```
 
 ---
 
-### DELETE /api/servers/:id
+#### `DELETE /api/servers/<id>`
 
-Deprovisions a server by its database ID. Deletes the Crafty server, PlayIT tunnel, all Cloudflare DNS records, and the database entry (cascades to tunnels and DNS rows).
+Deprovisions a server and **all associated resources**:
 
-**URL parameter:** `id` — integer database ID from `GET /api/servers`
+- Deletes the Crafty server
+- Deletes the PlayIT tunnel (browser automation)
+- Deletes all Cloudflare DNS records
+- Removes the database row
 
-**Response** `200 OK`
+**URL parameter:** `id` — The database `server_id` (integer) from `GET /api/servers`.
+
+**Response `200`:**
 
 ```json
 {
   "success": true,
-  "message": "Server 'Survival SMP' deleted successfully"
+  "message": "Server 'Paper Server' deleted successfully"
 }
 ```
 
-**Error responses**
+**Response `404`:**
 
-| Status | Cause                       |
-| ------ | --------------------------- |
-| `401`  | Missing or invalid API key  |
-| `404`  | No server with that ID      |
-| `500`  | Error during deprovisioning |
-
-**Example**
-
-```bash
-curl -X DELETE http://localhost:5000/api/servers/1 \
-  -H "Authorization: Bearer $API_KEY"
+```json
+{
+  "success": false,
+  "message": "No server found with ID 44"
+}
 ```
 
 ---
 
-## CLI Tools
+### Server Control
 
-### main.py — Provision a server
+All control endpoints use the database `server_id` (integer), not the Crafty UUID.
 
-```bash
-python main.py [options]
-```
+#### `POST /api/servers/<id>/start`
 
-| Flag        | Default                 | Description           |
-| ----------- | ----------------------- | --------------------- |
-| `--name`    | `Minecraft test server` | Server display name   |
-| `--type`    | `paper`                 | Server flavour        |
-| `--version` | `1.21.4`                | Minecraft version     |
-| `--port`    | `25565`                 | Local server port     |
-| `--mem-min` | `2`                     | Minimum JVM heap (GB) |
-| `--mem-max` | `4`                     | Maximum JVM heap (GB) |
+Starts the server.
 
-**Examples**
+**Response `200`:**
 
-```bash
-# Provision with defaults
-python main.py
-
-# Provision a Forge server on a custom port
-python main.py --name "Modded World" --type forge --version 1.20.1 --port 25570 --mem-min 4 --mem-max 8
+```json
+{ "success": true, "message": "Start command sent" }
 ```
 
 ---
 
-### delete_server.py — Deprovision a server
+#### `POST /api/servers/<id>/stop`
 
-Interactive CLI that shows a summary of all linked resources and asks for confirmation before deleting anything.
+Gracefully stops the server (sends the `stop` command).
 
-```bash
-# Pass the database ID as an argument
-python delete_server.py 1
+**Response `200`:**
 
-# Or run without arguments to be prompted
-python delete_server.py
+```json
+{ "success": true, "message": "Stop command sent" }
 ```
-
-Deprovisioning order:
-
-1. Delete Crafty game server
-2. Delete PlayIT tunnel (browser automation)
-3. Delete Cloudflare DNS records
-4. Delete database row (cascades to tunnel and DNS rows)
 
 ---
 
-## Logging
+#### `POST /api/servers/<id>/restart`
 
-Log level is controlled by the `LOG_LEVEL` environment variable:
+Restarts the server.
 
-| Value     | Output                                            |
-| --------- | ------------------------------------------------- |
-| `DEBUG`   | All internal steps, selectors, and HTTP responses |
-| `INFO`    | High-level lifecycle events (default)             |
-| `WARNING` | Non-fatal issues that may need attention          |
-| `ERROR`   | Failures that stop an operation                   |
+**Response `200`:**
 
-Colors are applied automatically when outputting to a terminal. To watch browser automation in real time, set `PLAYIT_HEADLESS=false`.
+```json
+{ "success": true, "message": "Restart command sent" }
+```
+
+---
+
+#### `POST /api/servers/<id>/kill`
+
+Force-kills the server process immediately (no graceful shutdown).
+
+**Response `200`:**
+
+```json
+{ "success": true, "message": "Kill command sent" }
+```
+
+---
+
+#### `POST /api/servers/<id>/command`
+
+Sends a console command to a running server's stdin.
+
+**Request body (JSON):**
+
+| Field     | Type   | Required | Description                           |
+| --------- | ------ | -------- | ------------------------------------- |
+| `command` | string | ✅       | The Minecraft console command to send |
+
+**Example request:**
+
+```json
+{ "command": "say Hello from the API!" }
+```
+
+**Example requests:**
+
+```json
+{ "command": "op PlayerName" }
+{ "command": "whitelist add PlayerName" }
+{ "command": "time set day" }
+{ "command": "stop" }
+```
+
+**Response `200`:**
+
+```json
+{ "success": true, "message": "Command sent" }
+```
+
+---
+
+#### `GET /api/servers/<id>/stats`
+
+Returns live stats for the server fetched from Crafty.
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "running": true,
+    "online": 3,
+    "max": 20,
+    "players": ["Player1", "Player2", "Player3"],
+    "cpu": 12.4,
+    "mem": 1024.0,
+    "desc": "A Minecraft Server",
+    "version": "1.18.2"
+  }
+}
+```
+
+> The exact fields returned depend on the Crafty version. Check Crafty's API docs for the full schema.
+
+---
+
+#### `GET /api/servers/<id>/logs`
+
+Returns the server's console log output.
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "data": [
+    "[08:55:23] [Server thread/INFO]: Starting minecraft server version 1.18.2",
+    "[08:55:25] [Server thread/INFO]: Done (2.341s)! For help, type \"help\""
+  ]
+}
+```
+
+---
+
+### File Management
+
+All file endpoints operate within the server's Crafty directory:
+
+```
+/var/opt/minecraft/crafty/crafty-4/servers/<crafty_uuid>/
+```
+
+Path traversal attacks are blocked — any `..` paths return `400`.
+
+---
+
+#### `GET /api/servers/<id>/files`
+
+Lists files and directories inside the server's folder.
+
+**Query parameters:**
+
+| Parameter | Type   | Required | Default   | Description          |
+| --------- | ------ | -------- | --------- | -------------------- |
+| `path`    | string | ❌       | `` (root) | Subdirectory to list |
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "path": "/",
+  "entries": [
+    { "name": "mods", "type": "directory", "size": null },
+    { "name": "world", "type": "directory", "size": null },
+    { "name": "server.properties", "type": "file", "size": 1155 },
+    { "name": "paper.jar", "type": "file", "size": 34829667 }
+  ]
+}
+```
+
+---
+
+#### `GET /api/servers/<id>/files/download`
+
+Downloads a file from the server's folder.
+
+**Query parameters:**
+
+| Parameter | Type   | Required | Description                                          |
+| --------- | ------ | -------- | ---------------------------------------------------- |
+| `path`    | string | ✅       | Relative path to the file (e.g. `server.properties`) |
+
+**Response `200`:** Binary file download with `Content-Disposition: attachment`.
+
+**Example:**
+
+```
+GET /api/servers/44/files/download?path=server.properties
+```
+
+---
+
+#### `POST /api/servers/<id>/files/upload`
+
+Uploads a file into the server's folder. Accepts `multipart/form-data`.
+
+**Query parameters:**
+
+| Parameter | Type   | Required | Default   | Description                       |
+| --------- | ------ | -------- | --------- | --------------------------------- |
+| `path`    | string | ❌       | `` (root) | Target subdirectory (e.g. `mods`) |
+
+**Form fields:**
+
+| Field  | Type | Required | Description        |
+| ------ | ---- | -------- | ------------------ |
+| `file` | file | ✅       | The file to upload |
+
+**Response `201`:**
+
+```json
+{
+  "success": true,
+  "message": "Uploaded mymod.jar",
+  "path": "/crafty/servers/80734f9e-.../mods/mymod.jar"
+}
+```
+
+---
+
+#### `DELETE /api/servers/<id>/files/delete`
+
+Deletes a file from the server's folder.
+
+**Query parameters:**
+
+| Parameter | Type   | Required | Description               |
+| --------- | ------ | -------- | ------------------------- |
+| `path`    | string | ✅       | Relative path to the file |
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "message": "Deleted banned-players.json"
+}
+```
+
+---
+
+## Schemas
+
+### Server Object
+
+```ts
+interface Server {
+  id: number; // Database primary key
+  name: string; // Display name
+  type: string; // "paper" | "forge" | "fabric" | "vanilla" | "purpur"
+  version: string; // Minecraft version e.g. "1.18.2"
+  port: number; // Local server port
+  crafty_id: string; // Crafty Controller UUID
+  created_at: string; // ISO 8601 datetime
+  tunnels: Tunnel[];
+  dns_records: DnsRecord[];
+}
+
+interface Tunnel {
+  address: string; // PlayIT tunnel hostname
+  local_port: number; // Local port the tunnel forwards to
+  external_port: number; // Public port players connect to
+}
+
+interface DnsRecord {
+  type: "CNAME" | "SRV";
+  name: string; // Full DNS name
+  target: string; // Tunnel hostname
+  port: number | null; // Only present on SRV records
+}
+```
+
+### File Entry Object
+
+```ts
+interface FileEntry {
+  name: string;
+  type: "file" | "directory";
+  size: number | null; // Bytes, null for directories
+}
+```
+
+### Provision Request
+
+```ts
+interface ProvisionRequest {
+  name: string; // Required
+  type?: "paper" | "forge" | "fabric" | "vanilla" | "purpur"; // Default: "paper"
+  version?: string; // Default: "1.21.4"
+  port?: number; // Default: 25565, range: 1024–65535
+  mem_min?: number; // Default: 2 (GB)
+  mem_max?: number; // Default: 4 (GB)
+}
+```
+
+### Provision Response
+
+```ts
+interface ProvisionResponse {
+  success: boolean;
+  message: string;
+  server_id: number; // Database ID
+  crafty_id: string; // Crafty UUID
+  connect_address: string; // e.g. "paper-server.homeops.services"
+  tunnel_address: string; // e.g. "single-washstand.deu.mcjoin.link"
+  external_port: number; // Public port
+}
+```
+
+---
+
+## Frontend Integration Guide
+
+### Recommended Approach
+
+Use the database `id` field (integer) from `GET /api/servers` as the primary key for all subsequent operations — not the `crafty_id`.
+
+### Example: Fetch all servers
+
+```js
+const res = await fetch("http://localhost:5000/api/servers", {
+  headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
+});
+const { servers } = await res.json();
+```
+
+### Example: Create a server
+
+```js
+const res = await fetch("http://localhost:5000/api/servers", {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    name: "My Server",
+    type: "paper",
+    version: "1.21.4",
+    port: 25565,
+  }),
+});
+const result = await res.json();
+// result.server_id  ← use this for all control endpoints
+```
+
+> ⚠️ Server creation takes 30–90+ seconds. Show a loading state and poll `GET /api/servers/<id>/stats` until `running` is `true`.
+
+### Example: Start / Stop / Restart / Kill
+
+```js
+const action = "start"; // or 'stop', 'restart', 'kill'
+await fetch(`http://localhost:5000/api/servers/${serverId}/${action}`, {
+  method: "POST",
+  headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
+});
+```
+
+### Example: Send a console command
+
+```js
+await fetch(`http://localhost:5000/api/servers/${serverId}/command`, {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ command: "say Hello!" }),
+});
+```
+
+### Example: Poll live stats
+
+```js
+async function pollStats(serverId, intervalMs = 3000) {
+  const res = await fetch(
+    `http://localhost:5000/api/servers/${serverId}/stats`,
+    {
+      headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
+    },
+  );
+  const { data } = await res.json();
+  // data.running  → boolean
+  // data.online   → current player count
+  // data.cpu      → CPU usage %
+  // data.mem      → RAM usage MB
+  return data;
+}
+```
+
+### Example: Upload a mod file
+
+```js
+const formData = new FormData();
+formData.append("file", fileInput.files[0]);
+
+await fetch(
+  `http://localhost:5000/api/servers/${serverId}/files/upload?path=mods`,
+  {
+    method: "POST",
+    headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
+    body: formData,
+  },
+);
+```
+
+### Example: Browse and download files
+
+```js
+// List root
+const res = await fetch(`http://localhost:5000/api/servers/${serverId}/files`, {
+  headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
+});
+const { entries } = await res.json();
+
+// Download a file
+window.location.href = `http://localhost:5000/api/servers/${serverId}/files/download?path=server.properties`;
+```
+
+### CORS
+
+If your frontend runs on a different origin, add Flask-CORS:
+
+```bash
+pip install flask-cors
+```
+
+```python
+# In app.py
+from flask_cors import CORS
+CORS(app)
+```
+
+Or restrict to specific origins:
+
+```python
+CORS(app, origins=["http://localhost:3000", "https://your-frontend.com"])
+```
