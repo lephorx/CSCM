@@ -65,6 +65,21 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ subdomain }),
       }),
+    rename: (id: number, name: string) =>
+      apiCall(`/servers/${id}/name`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }),
+    changePort: (id: number, port: number) =>
+      apiCall(`/servers/${id}/port`, {
+        method: "PATCH",
+        body: JSON.stringify({ port }),
+      }),
+    changeRam: (id: number, mem_min: number, mem_max: number) =>
+      apiCall(`/servers/${id}/ram`, {
+        method: "PATCH",
+        body: JSON.stringify({ mem_min, mem_max }),
+      }),
     command: (id: number, command: string) =>
       apiCall(`/servers/${id}/command`, {
         method: "POST",

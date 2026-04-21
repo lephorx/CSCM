@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useParams, notFound } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, Loader2, Globe, Pencil } from "lucide-react"
+import { ArrowLeft, Loader2, Globe, Pencil, Settings2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { TopNav } from "@/components/TopNav"
@@ -20,6 +20,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
 import type { Server, ServerStats as Stats } from "@/lib/types"
 
@@ -43,6 +44,18 @@ export default function ServerDetailPage() {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameValue, setRenameValue] = useState("")
   const [renaming, setRenaming] = useState(false)
+
+  // Settings edit state
+  type EditField = "name" | "port" | "ram" | null
+  const [editField, setEditField] = useState<EditField>(null)
+  const [editValues, setEditValues] = useState({
+    name: "",
+    port: "",
+    mem_min: "",
+    mem_max: "",
+  })
+  const [editSaving, setEditSaving] = useState(false)
+  const [portError, setPortError] = useState("")
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchStats = useCallback(async () => {
@@ -156,6 +169,57 @@ export default function ServerDetailPage() {
       )
     } finally {
       setRenaming(false)
+    }
+  }
+
+  function openEdit(field: "name" | "port" | "ram") {
+    if (!server) return
+    setPortError("")
+    if (field === "name") setEditValues((v) => ({ ...v, name: server.name }))
+    if (field === "port")
+      setEditValues((v) => ({ ...v, port: String(server.port) }))
+    if (field === "ram")
+      setEditValues((v) => ({ ...v, mem_min: "1", mem_max: "2" }))
+    setEditField(field)
+  }
+
+  async function handleEditSave(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editField) return
+    setEditSaving(true)
+    try {
+      if (editField === "name") {
+        const name = editValues.name.trim()
+        if (!name) {
+          toast.error("Name cannot be empty")
+          return
+        }
+        await api.control.rename(serverId, name)
+        toast.success("Server renamed")
+      } else if (editField === "port") {
+        const port = parseInt(editValues.port, 10)
+        if (isNaN(port) || port < 1024 || port > 65535) {
+          setPortError("Port must be between 1024 and 65535")
+          return
+        }
+        await api.control.changePort(serverId, port)
+        toast.success("Port updated")
+      } else if (editField === "ram") {
+        const min = parseInt(editValues.mem_min, 10)
+        const max = parseInt(editValues.mem_max, 10)
+        if (isNaN(min) || min < 1 || isNaN(max) || max < min) {
+          toast.error("Invalid RAM values")
+          return
+        }
+        await api.control.changeRam(serverId, min, max)
+        toast.success("RAM updated")
+      }
+      setEditField(null)
+      await refreshServerMeta()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save")
+    } finally {
+      setEditSaving(false)
     }
   }
 
@@ -307,6 +371,10 @@ export default function ServerDetailPage() {
             <TabsTrigger value="console">Console</TabsTrigger>
             <TabsTrigger value="files">Files</TabsTrigger>
             <TabsTrigger value="stats">Stats</TabsTrigger>
+            <TabsTrigger value="settings">
+              <Settings2 className="size-3.5" />
+              Settings
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent
@@ -330,6 +398,49 @@ export default function ServerDetailPage() {
             className="mt-0 border border-t-0 border-border"
           >
             <ServerStats serverId={serverId} />
+          </TabsContent>
+
+          <TabsContent
+            value="settings"
+            className="mt-0 border border-t-0 border-border"
+          >
+            <div className="divide-y divide-border">
+              {[
+                {
+                  label: "Server Name",
+                  value: server.name,
+                  field: "name" as const,
+                },
+                {
+                  label: "Port",
+                  value: String(server.port),
+                  field: "port" as const,
+                },
+                {
+                  label: "RAM",
+                  value: "Edit min/max heap",
+                  field: "ram" as const,
+                },
+              ].map(({ label, value, field }) => (
+                <div
+                  key={field}
+                  className="flex items-center justify-between px-6 py-4"
+                >
+                  <div>
+                    <p className="text-xs text-muted-foreground">{label}</p>
+                    <p className="text-sm font-medium">{value}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => openEdit(field)}
+                  >
+                    <Pencil className="size-3.5" />
+                    Edit
+                  </Button>
+                </div>
+              ))}
+            </div>
           </TabsContent>
         </Tabs>
       </main>
@@ -432,6 +543,113 @@ export default function ServerDetailPage() {
               <Button type="submit" disabled={renaming || !renameValue.trim()}>
                 {renaming && <Loader2 className="size-3.5 animate-spin" />}
                 {renaming ? "Renaming…" : "Rename"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Settings edit dialog */}
+      <Dialog
+        open={editField !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditField(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {editField === "name"
+                ? "Rename Server"
+                : editField === "port"
+                  ? "Change Port"
+                  : "Change RAM"}
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleEditSave} className="space-y-4 pt-1">
+            {editField === "name" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="edit-name">Server Name</Label>
+                <Input
+                  id="edit-name"
+                  value={editValues.name}
+                  onChange={(e) =>
+                    setEditValues((v) => ({ ...v, name: e.target.value }))
+                  }
+                  disabled={editSaving}
+                  autoFocus
+                />
+              </div>
+            )}
+            {editField === "port" && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="edit-port">Port</Label>
+                  <span className="text-xs text-muted-foreground">
+                    1024–65535
+                  </span>
+                </div>
+                <Input
+                  id="edit-port"
+                  type="number"
+                  min={1024}
+                  max={65535}
+                  value={editValues.port}
+                  onChange={(e) => {
+                    setEditValues((v) => ({ ...v, port: e.target.value }))
+                    setPortError("")
+                  }}
+                  disabled={editSaving}
+                  autoFocus
+                />
+                {portError && (
+                  <p className="text-xs text-destructive">{portError}</p>
+                )}
+              </div>
+            )}
+            {editField === "ram" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-memmin">Min (GB)</Label>
+                  <Input
+                    id="edit-memmin"
+                    type="number"
+                    min={1}
+                    value={editValues.mem_min}
+                    onChange={(e) =>
+                      setEditValues((v) => ({ ...v, mem_min: e.target.value }))
+                    }
+                    disabled={editSaving}
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="edit-memmax">Max (GB)</Label>
+                  <Input
+                    id="edit-memmax"
+                    type="number"
+                    min={1}
+                    value={editValues.mem_max}
+                    onChange={(e) =>
+                      setEditValues((v) => ({ ...v, mem_max: e.target.value }))
+                    }
+                    disabled={editSaving}
+                  />
+                </div>
+              </div>
+            )}
+            <DialogFooter className="gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setEditField(null)}
+                disabled={editSaving}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={editSaving}>
+                {editSaving && <Loader2 className="size-3.5 animate-spin" />}
+                {editSaving ? "Saving…" : "Save"}
               </Button>
             </DialogFooter>
           </form>
