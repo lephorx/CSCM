@@ -58,6 +58,13 @@ export const api = {
     restart: (id: number) =>
       apiCall(`/servers/${id}/restart`, { method: "POST" }),
     kill: (id: number) => apiCall(`/servers/${id}/kill`, { method: "POST" }),
+    tunnel: (id: number) =>
+      apiCall(`/servers/${id}/tunnel`, { method: "POST" }),
+    subdomain: (id: number, subdomain: string) =>
+      apiCall(`/servers/${id}/subdomain`, {
+        method: "PATCH",
+        body: JSON.stringify({ subdomain }),
+      }),
     command: (id: number, command: string) =>
       apiCall(`/servers/${id}/command`, {
         method: "POST",

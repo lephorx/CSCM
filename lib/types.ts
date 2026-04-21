@@ -26,7 +26,7 @@ export interface ServerStats {
   running: boolean
   online: number
   max: number
-  players: string[]
+  players: string[] | null | undefined
   cpu: number
   mem: number
   tps?: number

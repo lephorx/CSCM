@@ -91,12 +91,19 @@ export function ServerStats({ serverId }: Props) {
     )
   }
 
-  const memMB = Math.round(stats.mem ?? 0)
+  const rawMem = stats.mem ?? 0
   const cpuPct = Math.min(100, Math.round(stats.cpu ?? 0))
 
-  // mem: API returns MB used; assume 4096 MB as a reasonable display max if disk_total unknown
-  const memTotal = stats.disk_total ?? 4096
-  const memPct = Math.min(100, Math.round((memMB / memTotal) * 100))
+  // API may return mem in bytes or MB — normalise to MB for display
+  // Values > 10,000 are almost certainly bytes; divide down to MB
+  const memMB = rawMem > 10_000 ? rawMem / (1024 * 1024) : rawMem
+  const memDisplay =
+    memMB >= 1024
+      ? `${(memMB / 1024).toFixed(2)} GB`
+      : `${Math.round(memMB)} MB`
+
+  // Use a fixed 100% bar scaled to memMB (no disk_total dependency)
+  const memPct = Math.min(100, Math.round((memMB / 4096) * 100))
 
   const diskUsed = stats.disk_used ?? null
   const diskTotal = stats.disk_total ?? null
@@ -129,7 +136,7 @@ export function ServerStats({ serverId }: Props) {
         <span className="text-sm font-medium tabular-nums">
           {stats.online ?? 0} / {stats.max ?? "—"}
         </span>
-        {stats.players && stats.players.length > 0 && (
+        {Array.isArray(stats.players) && stats.players.length > 0 && (
           <p className="text-xs text-muted-foreground">
             {stats.players.join(", ")}
           </p>
@@ -175,7 +182,7 @@ export function ServerStats({ serverId }: Props) {
 
       {/* Memory */}
       <div className="col-span-full">
-        <StatRow label={`Memory Usage`} value={`${memMB} MB`} bar={memPct} />
+        <StatRow label="Memory Usage" value={memDisplay} bar={memPct} />
       </div>
 
       {/* Disk */}
