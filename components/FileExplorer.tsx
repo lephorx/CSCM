@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
+import { createPortal } from "react-dom"
 import {
   Folder,
   File,
@@ -29,6 +30,14 @@ interface Props {
   serverId: number
 }
 
+interface MenuState {
+  name: string
+  entryPath: string
+  isFile: boolean
+  x: number
+  y: number
+}
+
 function formatSize(bytes: number | null) {
   if (bytes === null) return ""
   if (bytes < 1024) return `${bytes} B`
@@ -44,9 +53,23 @@ export function FileExplorer({ serverId }: Props) {
   const [deleting, setDeleting] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
-  const [activeMenu, setActiveMenu] = useState<string | null>(null)
+  const [menu, setMenu] = useState<MenuState | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
+
+  // Close menu on scroll or click outside
+  useEffect(() => {
+    if (!menu) return
+    function close() {
+      setMenu(null)
+    }
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("mousedown", close)
+    return () => {
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("mousedown", close)
+    }
+  }, [menu])
 
   const loadDir = useCallback(
     async (targetPath: string) => {
@@ -79,7 +102,7 @@ export function FileExplorer({ serverId }: Props) {
     } else {
       loadDir("/" + segments.slice(0, index + 1).join("/"))
     }
-    setActiveMenu(null)
+    setMenu(null)
   }
 
   function handleEntryClick(entry: FileEntry) {
@@ -108,7 +131,7 @@ export function FileExplorer({ serverId }: Props) {
     const filePath = path === "/" ? `/${name}` : `${path}/${name}`
     const url = api.files.downloadUrl(serverId, filePath)
     window.open(url, "_blank", "noopener")
-    setActiveMenu(null)
+    setMenu(null)
   }
 
   async function uploadFiles(files: FileList | File[]) {
@@ -235,7 +258,6 @@ export function FileExplorer({ serverId }: Props) {
               .map((entry) => {
                 const entryPath =
                   path === "/" ? `/${entry.name}` : `${path}/${entry.name}`
-                const isMenuOpen = activeMenu === entry.name
 
                 return (
                   <li
@@ -264,56 +286,73 @@ export function FileExplorer({ serverId }: Props) {
                       {formatSize(entry.size)}
                     </span>
 
-                    {/* Actions menu */}
-                    <div className="relative">
-                      <button
-                        className="flex size-6 items-center justify-center opacity-0 transition-all group-hover:opacity-100 hover:bg-muted"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          setActiveMenu(isMenuOpen ? null : entry.name)
-                        }}
-                        aria-label={`Actions for ${entry.name}`}
-                        aria-haspopup="true"
-                        aria-expanded={isMenuOpen}
-                      >
-                        <MoreHorizontal className="size-3.5" />
-                      </button>
-
-                      {isMenuOpen && (
-                        <div
-                          className="absolute right-0 bottom-7 z-50 min-w-32 border border-border bg-popover py-1 shadow-md"
-                          role="menu"
-                        >
-                          {entry.type === "file" && (
-                            <button
-                              role="menuitem"
-                              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted"
-                              onClick={() => handleDownload(entry.name)}
-                            >
-                              <Download className="size-3.5" />
-                              Download
-                            </button>
-                          )}
-                          <button
-                            role="menuitem"
-                            className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10"
-                            onClick={() => {
-                              setDeleteTarget(entryPath)
-                              setActiveMenu(null)
-                            }}
-                          >
-                            <Trash2 className="size-3.5" />
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                    {/* Three-dot trigger */}
+                    <button
+                      className="flex size-6 items-center justify-center opacity-0 transition-all group-hover:opacity-100 hover:bg-muted"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (menu?.name === entry.name) {
+                          setMenu(null)
+                          return
+                        }
+                        const rect = (
+                          e.currentTarget as HTMLElement
+                        ).getBoundingClientRect()
+                        setMenu({
+                          name: entry.name,
+                          entryPath,
+                          isFile: entry.type === "file",
+                          x: rect.right,
+                          y: rect.bottom + 4,
+                        })
+                      }}
+                      aria-label={`Actions for ${entry.name}`}
+                      aria-haspopup="true"
+                      aria-expanded={menu?.name === entry.name}
+                    >
+                      <MoreHorizontal className="size-3.5" />
+                    </button>
                   </li>
                 )
               })}
           </ul>
         )}
       </div>
+
+      {/* Portal dropdown menu — renders outside overflow container */}
+      {menu &&
+        createPortal(
+          <div
+            role="menu"
+            onMouseDown={(e) => e.stopPropagation()}
+            className="fixed z-[9999] min-w-36 border border-border bg-popover py-1 shadow-lg"
+            style={{ top: menu.y, left: menu.x - 144 }}
+          >
+            {menu.isFile && (
+              <button
+                role="menuitem"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted"
+                onClick={() => handleDownload(menu.name)}
+              >
+                <Download className="size-3.5" />
+                Download
+              </button>
+            )}
+            <button
+              role="menuitem"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+              onClick={() => {
+                setDeleteTarget(menu.entryPath)
+                setMenu(null)
+              }}
+            >
+              <Trash2 className="size-3.5" />
+              Delete
+            </button>
+          </div>,
+          document.body
+        )}
 
       {/* Delete confirm */}
       <Dialog
