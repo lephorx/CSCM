@@ -218,11 +218,20 @@ _crafty_servers_dir = Path(os.getenv(
     "CRAFTY_SERVERS_DIR",
     "/var/opt/minecraft/crafty/crafty-4/servers",
 ))
+_crafty_token: str | None = None
+
+
+def _get_crafty_token() -> str | None:
+    """Return the cached Crafty token, logging in only when necessary."""
+    global _crafty_token
+    if not _crafty_token:
+        _crafty_token = crafty_login()
+    return _crafty_token
 
 
 def _crafty_request(method: str, path: str, **kwargs):
-    """Make an authenticated request to the Crafty API."""
-    token = crafty_login()
+    """Make an authenticated request to the Crafty API, re-auth on 401."""
+    token = _get_crafty_token()
     if not token:
         return None, "Could not authenticate with Crafty Controller"
     try:
@@ -231,8 +240,21 @@ def _crafty_request(method: str, path: str, **kwargs):
             f"{_base_url}{path}",
             headers={"Authorization": f"Bearer {token}"},
             verify=False,
-            **kwargs, 
+            **kwargs,
         )
+        if r.status_code == 401:
+            # Token expired or invalidated — force re-login once
+            global _crafty_token  # noqa: F811
+            _crafty_token = crafty_login()
+            if not _crafty_token:
+                return None, "Could not re-authenticate with Crafty Controller"
+            r = requests.request(
+                method,
+                f"{_base_url}{path}",
+                headers={"Authorization": f"Bearer {_crafty_token}"},
+                verify=False,
+                **kwargs,
+            )
         return r, None
     except requests.exceptions.RequestException as exc:
         return None, str(exc)
