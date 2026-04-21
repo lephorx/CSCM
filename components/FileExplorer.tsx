@@ -281,7 +281,7 @@ export function FileExplorer({ serverId }: Props) {
 
                       {isMenuOpen && (
                         <div
-                          className="absolute top-7 right-0 z-50 min-w-32 border border-border bg-popover py-1 shadow-md"
+                          className="absolute right-0 bottom-7 z-50 min-w-32 border border-border bg-popover py-1 shadow-md"
                           role="menu"
                         >
                           {entry.type === "file" && (
