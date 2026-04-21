@@ -32,6 +32,7 @@ import requests
 import urllib3
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 from server_manager import (
@@ -47,6 +48,7 @@ configure_log()
 
 log = get_logger("api")
 app = Flask(__name__)
+CORS(app)
 
 API_KEY = os.getenv("API_KEY")
 
@@ -59,6 +61,10 @@ def _authorize() -> tuple | None:
         or ``None`` when the request is authorized.
     """
     if not API_KEY:
+        return None
+    # OPTIONS preflight requests must not be blocked — CORS headers are added
+    # by flask-cors after the response is built.
+    if request.method == "OPTIONS":
         return None
     if request.headers.get("Authorization") != f"Bearer {API_KEY}":
         log.warning(
@@ -212,11 +218,20 @@ _crafty_servers_dir = Path(os.getenv(
     "CRAFTY_SERVERS_DIR",
     "/var/opt/minecraft/crafty/crafty-4/servers",
 ))
+_crafty_token: str | None = None
+
+
+def _get_crafty_token() -> str | None:
+    """Return the cached Crafty token, logging in only when necessary."""
+    global _crafty_token
+    if not _crafty_token:
+        _crafty_token = crafty_login()
+    return _crafty_token
 
 
 def _crafty_request(method: str, path: str, **kwargs):
-    """Make an authenticated request to the Crafty API."""
-    token = crafty_login()
+    """Make an authenticated request to the Crafty API, re-auth on 401."""
+    token = _get_crafty_token()
     if not token:
         return None, "Could not authenticate with Crafty Controller"
     try:
@@ -225,8 +240,21 @@ def _crafty_request(method: str, path: str, **kwargs):
             f"{_base_url}{path}",
             headers={"Authorization": f"Bearer {token}"},
             verify=False,
-            **kwargs, 
+            **kwargs,
         )
+        if r.status_code == 401:
+            # Token expired or invalidated — force re-login once
+            global _crafty_token  # noqa: F811
+            _crafty_token = crafty_login()
+            if not _crafty_token:
+                return None, "Could not re-authenticate with Crafty Controller"
+            r = requests.request(
+                method,
+                f"{_base_url}{path}",
+                headers={"Authorization": f"Bearer {_crafty_token}"},
+                verify=False,
+                **kwargs,
+            )
         return r, None
     except requests.exceptions.RequestException as exc:
         return None, str(exc)
@@ -572,6 +600,7 @@ def update_server_ram(server_id: int):
 def _server_dir(crafty_id: str, rel_path: str = "") -> Path | None:
     """Resolve a path inside a server's directory, guarding against traversal."""
     base = (_crafty_servers_dir / crafty_id).resolve()
+    rel_path = rel_path.lstrip("/")
     target = (base / rel_path).resolve() if rel_path else base
     if not str(target).startswith(str(base)):
         return None  # path traversal attempt
