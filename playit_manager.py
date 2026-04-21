@@ -80,7 +80,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             await asyncio.sleep(1)
 
             log.debug("Navigating to Tunnels section")
-            await page.click('span._11qktlo8')
+            await page.goto("https://playit.gg/account/tunnels", wait_until="networkidle")
             await asyncio.sleep(1)
 
             await page.wait_for_selector('a[href="/account/setup/new-tunnel"]', timeout=TIMEOUT)
@@ -254,7 +254,7 @@ async def delete_tunnel(tunnel_name: str) -> bool:
 
             # Navigate to Tunnels list
             log.debug("Opening Tunnels list")
-            await page.click('span._11qktlo8')
+            await page.goto("https://playit.gg/account/tunnels", wait_until="networkidle")
             await asyncio.sleep(1)
 
             # Find and click the tunnel link by its display name
@@ -277,21 +277,25 @@ async def delete_tunnel(tunnel_name: str) -> bool:
             await tunnel_link.click()
             await asyncio.sleep(1)
 
-            # Open the options menu (list-ul icon button)
-            log.debug("Opening options menu")
-            await page.wait_for_selector('button.maeflab.maefla8', timeout=TIMEOUT)
-            await page.click('button.maeflab.maefla8')
+            # Open the options menu — the list-ul icon button
+            log.debug("Opening options menu (list-ul button)")
+            await page.wait_for_selector('button:has(svg[data-icon="list-ul"])', timeout=TIMEOUT)
+            await page.click('button:has(svg[data-icon="list-ul"])')
             await asyncio.sleep(0.5)
 
-            # Click Delete in the dropdown
+            # Click the Delete option specifically (by visible text)
             log.debug("Clicking Delete option")
-            delete_option = await page.wait_for_selector('button._6axz482', timeout=TIMEOUT)
+            delete_option = await page.wait_for_selector(
+                'button:has-text("Delete")', timeout=TIMEOUT
+            )
             await delete_option.click()
             await asyncio.sleep(0.5)
 
-            # Confirm deletion in the dialog
+            # Confirm deletion — click the confirm Delete button in the dialog
             log.debug("Confirming deletion")
-            confirm_btn = await page.wait_for_selector('button.maeflaa.maefla8', timeout=TIMEOUT)
+            confirm_btn = await page.wait_for_selector(
+                'button:has-text("Delete")', timeout=TIMEOUT
+            )
             await confirm_btn.click()
             await asyncio.sleep(1)
 
