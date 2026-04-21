@@ -463,3 +463,216 @@ def list_servers() -> list[dict]:
         return []
     finally:
         conn.close()
+
+
+def create_server_tunnel(db_server_id: int) -> dict:
+    """Create a PlayIT tunnel and Cloudflare DNS records for an existing server."""
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT name, serverport FROM servers WHERE id = %s", (db_server_id,))
+        row = cur.fetchone()
+    except psycopg2.Error as exc:
+        log.error("Database error fetching server %d: %s", db_server_id, exc)
+        return {"success": False, "message": f"Database error: {exc}"}
+    finally:
+        conn.close()
+
+    if not row:
+        return {"success": False, "message": f"No server found with ID {db_server_id}"}
+
+    server_name, server_port = row
+    subdomain = server_name.lower().replace(" ", "-")
+
+    log.info("Creating PlayIT tunnel: name=%s, local_port=%d", subdomain, server_port)
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port))
+    if not tunnel_address:
+        return {"success": False, "message": "PlayIT tunnel creation failed"}
+
+    external_port = lookup_minecraft_srv_port(tunnel_address)
+    if external_port:
+        log.debug("External port resolved: %d", external_port)
+    else:
+        log.warning("Could not resolve external port for tunnel %s", tunnel_address)
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "INSERT INTO playit_tunnels"
+            " (server_id, tunnel_name, tunnel_address, local_port, external_port)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (db_server_id, subdomain, tunnel_address, server_port, external_port),
+        )
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("Failed to persist tunnel record: %s", exc)
+    finally:
+        conn.close()
+
+    log.info("Creating Cloudflare CNAME: %s -> %s", subdomain, tunnel_address)
+    cname_result = create_dns_record(subdomain=subdomain, target=tunnel_address)
+    if not cname_result:
+        return {
+            "success": False,
+            "message": "Cloudflare CNAME creation failed",
+            "tunnel_address": tunnel_address,
+            "external_port": external_port,
+        }
+
+    dns_name, cname_cf_id = cname_result
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "INSERT INTO dns_records"
+            " (server_id, record_type, name, target, cloudflare_record_id)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (db_server_id, "CNAME", dns_name, tunnel_address, cname_cf_id),
+        )
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("Failed to persist CNAME record: %s", exc)
+    finally:
+        conn.close()
+
+    if external_port:
+        srv_cf_id = create_srv_record(subdomain=subdomain, target=tunnel_address, port=external_port)
+        if srv_cf_id:
+            srv_name = f"_minecraft._tcp.{dns_name}"
+            try:
+                conn = _get_db()
+                cur  = conn.cursor()
+                cur.execute(
+                    "INSERT INTO dns_records"
+                    " (server_id, record_type, name, target, port, cloudflare_record_id)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    (db_server_id, "SRV", srv_name, tunnel_address, external_port, srv_cf_id),
+                )
+                conn.commit()
+            except psycopg2.Error as exc:
+                log.warning("Failed to persist SRV record: %s", exc)
+            finally:
+                conn.close()
+
+    log.info(
+        "Tunnel created for server db_id=%d: connect_address=%s, external_port=%s",
+        db_server_id, dns_name, external_port,
+    )
+    return {
+        "success": True,
+        "message": "Tunnel and DNS records created successfully",
+        "tunnel_address": tunnel_address,
+        "external_port": external_port,
+        "connect_address": dns_name,
+    }
+
+
+def rename_server_subdomain(db_server_id: int, new_subdomain: str) -> dict:
+    """Delete old Cloudflare DNS records and create new ones under a new subdomain."""
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT id FROM servers WHERE id = %s", (db_server_id,))
+        if not cur.fetchone():
+            return {"success": False, "message": f"No server found with ID {db_server_id}"}
+        cur.execute(
+            "SELECT cloudflare_record_id, record_type, name"
+            " FROM dns_records WHERE server_id = %s",
+            (db_server_id,),
+        )
+        old_dns_rows = cur.fetchall()
+        cur.execute(
+            "SELECT tunnel_address, external_port FROM playit_tunnels WHERE server_id = %s",
+            (db_server_id,),
+        )
+        tunnel_row = cur.fetchone()
+    except psycopg2.Error as exc:
+        log.error("Database error fetching server %d: %s", db_server_id, exc)
+        return {"success": False, "message": f"Database error: {exc}"}
+    finally:
+        conn.close()
+
+    if not tunnel_row:
+        return {"success": False, "message": "No tunnel found for this server — create one first"}
+
+    tunnel_address, external_port = tunnel_row
+
+    for cf_id, rtype, name in old_dns_rows:
+        log.info("Deleting old DNS record: type=%s name=%s cf_id=%s", rtype, name, cf_id)
+        delete_dns_record_by_id(cf_id)
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute("DELETE FROM dns_records WHERE server_id = %s", (db_server_id,))
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("Failed to delete old DNS records from DB: %s", exc)
+    finally:
+        conn.close()
+
+    log.info("Creating Cloudflare CNAME: %s -> %s", new_subdomain, tunnel_address)
+    cname_result = create_dns_record(subdomain=new_subdomain, target=tunnel_address)
+    if not cname_result:
+        return {"success": False, "message": "Cloudflare CNAME creation failed"}
+
+    dns_name, cname_cf_id = cname_result
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "INSERT INTO dns_records"
+            " (server_id, record_type, name, target, cloudflare_record_id)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (db_server_id, "CNAME", dns_name, tunnel_address, cname_cf_id),
+        )
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("Failed to persist new CNAME record: %s", exc)
+    finally:
+        conn.close()
+
+    if external_port:
+        srv_cf_id = create_srv_record(subdomain=new_subdomain, target=tunnel_address, port=external_port)
+        if srv_cf_id:
+            srv_name = f"_minecraft._tcp.{dns_name}"
+            try:
+                conn = _get_db()
+                cur  = conn.cursor()
+                cur.execute(
+                    "INSERT INTO dns_records"
+                    " (server_id, record_type, name, target, port, cloudflare_record_id)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    (db_server_id, "SRV", srv_name, tunnel_address, external_port, srv_cf_id),
+                )
+                conn.commit()
+            except psycopg2.Error as exc:
+                log.warning("Failed to persist new SRV record: %s", exc)
+            finally:
+                conn.close()
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "UPDATE playit_tunnels SET tunnel_name = %s WHERE server_id = %s",
+            (new_subdomain, db_server_id),
+        )
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("Failed to update tunnel_name: %s", exc)
+    finally:
+        conn.close()
+
+    log.info(
+        "Subdomain renamed for server db_id=%d: new connect_address=%s",
+        db_server_id, dns_name,
+    )
+    return {
+        "success": True,
+        "message": "Subdomain renamed successfully",
+        "connect_address": dns_name,
+    }

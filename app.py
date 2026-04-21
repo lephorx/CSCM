@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 
 from server_manager import (
     provision_server, deprovision_server, list_servers, SERVER_TYPES,
-    crafty_login, _get_db,
+    crafty_login, _get_db, create_server_tunnel, rename_server_subdomain,
 )
 from logger import get_logger, configure as configure_log
 
@@ -379,6 +379,194 @@ def server_logs(server_id: int):
     if err:
         return jsonify({"success": False, "message": err}), 500
     return jsonify({"success": r.ok, "data": r.json().get("data", [])}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/tunnel
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/tunnel", methods=["POST"])
+def create_tunnel_endpoint(server_id: int):
+    """Create a PlayIT tunnel and Cloudflare DNS records for a server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+
+    log.info("Tunnel creation requested: db_id=%d", server_id)
+    result = create_server_tunnel(server_id)
+
+    if result["success"]:
+        log.info("Tunnel created: db_id=%d, address=%s", server_id, result.get("connect_address"))
+        return jsonify(result), 201
+    if "No server found" in result.get("message", ""):
+        return jsonify(result), 404
+    log.error("Tunnel creation failed: %s", result.get("message"))
+    return jsonify(result), 500
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/subdomain
+# Body: { "subdomain": "new-name" }
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/subdomain", methods=["PATCH"])
+def rename_subdomain(server_id: int):
+    """Rename the Cloudflare subdomain for a server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+
+    body = request.get_json(silent=True) or {}
+    new_subdomain = body.get("subdomain", "").strip().lower()
+    if not new_subdomain:
+        return jsonify({"success": False, "message": "'subdomain' is required"}), 400
+
+    log.info("Subdomain rename requested: db_id=%d, new_subdomain=%s", server_id, new_subdomain)
+    result = rename_server_subdomain(server_id, new_subdomain)
+
+    if result["success"]:
+        return jsonify(result), 200
+    if "No server found" in result.get("message", ""):
+        return jsonify(result), 404
+    log.error("Subdomain rename failed: %s", result.get("message"))
+    return jsonify(result), 500
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/name
+# Body: { "name": "New Server Name" }
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/name", methods=["PATCH"])
+def rename_server(server_id: int):
+    """Rename a server in Crafty and the database."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+
+    body = request.get_json(silent=True) or {}
+    new_name = body.get("name", "").strip()
+    if not new_name:
+        return jsonify({"success": False, "message": "'name' is required"}), 400
+
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    r, err = _crafty_request("PATCH", f"/api/v2/servers/{crafty_id}", json={"server_name": new_name})
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    if not r.ok:
+        return jsonify({"success": False, "message": r.text}), 500
+
+    import psycopg2
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute("UPDATE servers SET name = %s WHERE id = %s", (new_name, server_id))
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("DB update failed after Crafty rename: %s", exc)
+    finally:
+        conn.close()
+
+    log.info("Server renamed: db_id=%d, new_name=%s", server_id, new_name)
+    return jsonify({"success": True, "message": f"Server renamed to '{new_name}'"}), 200
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/port
+# Body: { "port": 25566 }
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/port", methods=["PATCH"])
+def update_server_port(server_id: int):
+    """Change the server port in Crafty and the database."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+
+    body = request.get_json(silent=True) or {}
+    new_port = body.get("port")
+    if not isinstance(new_port, int) or not (1024 <= new_port <= 65535):
+        return jsonify({"success": False, "message": "'port' must be an integer between 1024 and 65535"}), 400
+
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    r, err = _crafty_request("PATCH", f"/api/v2/servers/{crafty_id}", json={"server_port": new_port})
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    if not r.ok:
+        return jsonify({"success": False, "message": r.text}), 500
+
+    import psycopg2
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute("UPDATE servers SET serverport = %s WHERE id = %s", (new_port, server_id))
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("DB update failed after port change: %s", exc)
+    finally:
+        conn.close()
+
+    log.info("Server port updated: db_id=%d, new_port=%d", server_id, new_port)
+    return jsonify({"success": True, "message": f"Port updated to {new_port}"}), 200
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/ram
+# Body: { "mem_min": 2, "mem_max": 4 }  (values in GB)
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/ram", methods=["PATCH"])
+def update_server_ram(server_id: int):
+    """Change the JVM heap allocation for a server."""
+    import re
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+
+    body = request.get_json(silent=True) or {}
+    mem_min = body.get("mem_min")
+    mem_max = body.get("mem_max")
+    if not isinstance(mem_min, int) or not isinstance(mem_max, int) \
+            or mem_min < 1 or mem_max < mem_min:
+        return jsonify({
+            "success": False,
+            "message": "'mem_min' and 'mem_max' must be positive integers with mem_max >= mem_min",
+        }), 400
+
+    crafty_id = _get_crafty_id(server_id)
+    if not crafty_id:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    # Fetch current execution_command from Crafty
+    r, err = _crafty_request("GET", f"/api/v2/servers/{crafty_id}")
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    exec_cmd = (r.json().get("data") or {}).get("execution_command", "")
+
+    if not re.search(r"-Xms\d+[MmGg]", exec_cmd):
+        return jsonify({
+            "success": False,
+            "message": "No -Xms/-Xmx flags found in execution command. "
+                       "For Forge servers, edit user_jvm_args.txt directly.",
+            "execution_command": exec_cmd,
+        }), 400
+
+    new_cmd = re.sub(r"-Xms\d+[MmGg]", f"-Xms{mem_min * 1000}M", exec_cmd)
+    new_cmd = re.sub(r"-Xmx\d+[MmGg]", f"-Xmx{mem_max * 1000}M", new_cmd)
+
+    r2, err = _crafty_request("PATCH", f"/api/v2/servers/{crafty_id}", json={"execution_command": new_cmd})
+    if err:
+        return jsonify({"success": False, "message": err}), 500
+    if not r2.ok:
+        return jsonify({"success": False, "message": r2.text}), 500
+
+    log.info("Server RAM updated: db_id=%d, mem_min=%dGB, mem_max=%dGB", server_id, mem_min, mem_max)
+    return jsonify({
+        "success": True,
+        "message": f"RAM updated: {mem_min}GB min, {mem_max}GB max",
+        "execution_command": new_cmd,
+    }), 200
 
 
 def _server_dir(crafty_id: str, rel_path: str = "") -> Path | None:
