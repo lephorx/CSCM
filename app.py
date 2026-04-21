@@ -37,7 +37,7 @@ from dotenv import load_dotenv
 
 from server_manager import (
     provision_server, deprovision_server, list_servers, SERVER_TYPES,
-    crafty_login, _get_db,
+    crafty_login, _get_db, create_server_tunnel,
 )
 from logger import get_logger, configure as configure_log
 
@@ -407,6 +407,28 @@ def server_logs(server_id: int):
     if err:
         return jsonify({"success": False, "message": err}), 500
     return jsonify({"success": r.ok, "data": r.json().get("data", [])}), 200
+
+
+# ---------------------------------------------------------------------------
+# POST /api/servers/<id>/tunnel
+# ---------------------------------------------------------------------------
+@app.route("/api/servers/<int:server_id>/tunnel", methods=["POST"])
+def create_tunnel_endpoint(server_id: int):
+    """Create a PlayIT tunnel and Cloudflare DNS records for a server."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+
+    log.info("Tunnel creation requested: db_id=%d", server_id)
+    result = create_server_tunnel(server_id)
+
+    if result["success"]:
+        log.info("Tunnel created: db_id=%d, address=%s", server_id, result.get("connect_address"))
+        return jsonify(result), 201
+    if "No server found" in result.get("message", ""):
+        return jsonify(result), 404
+    log.error("Tunnel creation failed: %s", result.get("message"))
+    return jsonify(result), 500
 
 
 def _server_dir(crafty_id: str, rel_path: str = "") -> Path | None:

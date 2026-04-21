@@ -463,3 +463,121 @@ def list_servers() -> list[dict]:
         return []
     finally:
         conn.close()
+
+
+def create_server_tunnel(db_server_id: int) -> dict:
+    """Create a PlayIT tunnel and Cloudflare DNS records for an existing server.
+
+    Args:
+        db_server_id: The primary key of the server in the ``servers`` table.
+
+    Returns:
+        A dict containing ``success`` (bool), ``message`` (str), and on success:
+        ``tunnel_address``, ``external_port``, ``connect_address``.
+    """
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute("SELECT name, serverport FROM servers WHERE id = %s", (db_server_id,))
+        row = cur.fetchone()
+    except psycopg2.Error as exc:
+        log.error("Database error fetching server %d: %s", db_server_id, exc)
+        return {"success": False, "message": f"Database error: {exc}"}
+    finally:
+        conn.close()
+
+    if not row:
+        return {"success": False, "message": f"No server found with ID {db_server_id}"}
+
+    server_name, server_port = row
+    subdomain = server_name.lower().replace(" ", "-")
+
+    # Step 1: Create PlayIT tunnel
+    log.info("Creating PlayIT tunnel: name=%s, local_port=%d", subdomain, server_port)
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port))
+    if not tunnel_address:
+        return {"success": False, "message": "PlayIT tunnel creation failed"}
+
+    # Resolve external port via SRV lookup
+    external_port = lookup_minecraft_srv_port(tunnel_address)
+    if external_port:
+        log.debug("External port resolved: %d", external_port)
+    else:
+        log.warning("Could not resolve external port for tunnel %s", tunnel_address)
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "INSERT INTO playit_tunnels"
+            " (server_id, tunnel_name, tunnel_address, local_port, external_port)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (db_server_id, subdomain, tunnel_address, server_port, external_port),
+        )
+        conn.commit()
+        log.debug("Tunnel record persisted: address=%s", tunnel_address)
+    except psycopg2.Error as exc:
+        log.warning("Failed to persist tunnel record: %s", exc)
+    finally:
+        conn.close()
+
+    # Step 2: Create Cloudflare CNAME record
+    log.info("Creating Cloudflare CNAME: %s -> %s", subdomain, tunnel_address)
+    cname_result = create_dns_record(subdomain=subdomain, target=tunnel_address)
+    if not cname_result:
+        return {
+            "success": False,
+            "message": "Cloudflare CNAME creation failed",
+            "tunnel_address": tunnel_address,
+            "external_port": external_port,
+        }
+
+    dns_name, cname_cf_id = cname_result
+
+    try:
+        conn = _get_db()
+        cur  = conn.cursor()
+        cur.execute(
+            "INSERT INTO dns_records"
+            " (server_id, record_type, name, target, cloudflare_record_id)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (db_server_id, "CNAME", dns_name, tunnel_address, cname_cf_id),
+        )
+        conn.commit()
+    except psycopg2.Error as exc:
+        log.warning("Failed to persist CNAME record: %s", exc)
+    finally:
+        conn.close()
+
+    # Step 3: Create Cloudflare SRV record
+    if external_port:
+        log.info("Creating Cloudflare SRV record: port=%d", external_port)
+        srv_cf_id = create_srv_record(subdomain=subdomain, target=tunnel_address, port=external_port)
+        if srv_cf_id:
+            srv_name = f"_minecraft._tcp.{dns_name}"
+            try:
+                conn = _get_db()
+                cur  = conn.cursor()
+                cur.execute(
+                    "INSERT INTO dns_records"
+                    " (server_id, record_type, name, target, port, cloudflare_record_id)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    (db_server_id, "SRV", srv_name, tunnel_address, external_port, srv_cf_id),
+                )
+                conn.commit()
+            except psycopg2.Error as exc:
+                log.warning("Failed to persist SRV record: %s", exc)
+            finally:
+                conn.close()
+
+    log.info(
+        "Tunnel created for server db_id=%d: connect_address=%s, external_port=%s",
+        db_server_id, dns_name, external_port,
+    )
+    return {
+        "success": True,
+        "message": "Tunnel and DNS records created successfully",
+        "tunnel_address": tunnel_address,
+        "external_port": external_port,
+        "connect_address": dns_name,
+    }
