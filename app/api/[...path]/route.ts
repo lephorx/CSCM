@@ -5,7 +5,8 @@ const BEARER_TOKEN = process.env.BEARER_TOKEN ?? ""
 
 async function proxy(req: NextRequest, segments: string[]) {
   const path = segments.join("/")
-  const search = req.nextUrl.search
+  // Decode %2F back to / so the backend receives path=/ not path=%2F
+  const search = req.nextUrl.search.replace(/%2F/gi, "/")
   const url = `${BACKEND}/api/${path}${search}`
 
   const isFormData = req.headers
