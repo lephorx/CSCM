@@ -5,3 +5,4 @@ cloudflare
 playwright
 dnspython
 flask
+flask-cors
