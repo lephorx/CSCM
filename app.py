@@ -390,6 +390,7 @@ def server_logs(server_id: int):
 def _server_dir(crafty_id: str, rel_path: str = "") -> Path | None:
     """Resolve a path inside a server's directory, guarding against traversal."""
     base = (_crafty_servers_dir / crafty_id).resolve()
+    rel_path = rel_path.lstrip("/")
     target = (base / rel_path).resolve() if rel_path else base
     if not str(target).startswith(str(base)):
         return None  # path traversal attempt
