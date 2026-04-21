@@ -50,10 +50,9 @@ log = get_logger("server_manager")
 # ---------------------------------------------------------------------------
 SERVER_TYPES = {
     "paper":   {"category": "mc_java_servers", "type": "paper"},
-    "forge":   {"category": "mc_java_servers", "type": "forge"},
+    "forge":   {"category": "mc_java_servers", "type": "forge-installer"},
     "fabric":  {"category": "mc_java_servers", "type": "fabric"},
     "vanilla": {"category": "mc_java_servers", "type": "vanilla"},
-    "spigot":  {"category": "mc_java_servers", "type": "spigot"},
     "purpur":  {"category": "mc_java_servers", "type": "purpur"},
 }
 
