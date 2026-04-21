@@ -74,7 +74,7 @@ def _authorize() -> tuple | None:
         return jsonify({"error": "Unauthorized"}), 401
     return None
 
-g
+
 @app.before_request
 def _log_request() -> None:
     log.debug(
