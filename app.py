@@ -32,6 +32,7 @@ import requests
 import urllib3
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 from server_manager import (
@@ -47,6 +48,7 @@ configure_log()
 
 log = get_logger("api")
 app = Flask(__name__)
+CORS(app)
 
 API_KEY = os.getenv("API_KEY")
 
