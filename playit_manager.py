@@ -66,9 +66,14 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
                     "--disable-dev-shm-usage",
                 ],
             )
-            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                storage_state=None,
+            )
+            page = await context.new_page()
 
             if not await _login(page):
+                await context.close()
                 await browser.close()
                 return None
 
@@ -154,6 +159,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             )
 
             log.info("Tunnel created successfully: address=%s, port=%s", address, tunnel_port)
+            await context.close()
             await browser.close()
             return address
 
@@ -232,10 +238,15 @@ async def delete_tunnel(tunnel_name: str) -> bool:
                     "--disable-dev-shm-usage",
                 ],
             )
-            page = await browser.new_page(viewport={"width": 1280, "height": 720})
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                storage_state=None,
+            )
+            page = await context.new_page()
 
             # Authenticate
             if not await _login(page):
+                await context.close()
                 await browser.close()
                 return False
 
@@ -259,6 +270,7 @@ async def delete_tunnel(tunnel_name: str) -> bool:
             )
             if not tunnel_link:
                 log.error("Tunnel not found in dashboard: %s", tunnel_name)
+                await context.close()
                 await browser.close()
                 return False
 
@@ -284,6 +296,7 @@ async def delete_tunnel(tunnel_name: str) -> bool:
             await asyncio.sleep(1)
 
             log.info("Tunnel deleted successfully: name=%s", tunnel_name)
+            await context.close()
             await browser.close()
             return True
 
