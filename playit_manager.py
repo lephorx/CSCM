@@ -262,8 +262,8 @@ async def delete_tunnel(tunnel_name: str) -> bool:
             tunnel_link = await page.wait_for_function(
                 f"""
                 () => {{
-                    const links = Array.from(document.querySelectorAll('a._17i11qw1'));
-                    return links.find(el => el.textContent.includes({repr(tunnel_name)})) || null;
+                    const containers = Array.from(document.querySelectorAll('div._17i11qw3'));
+                    return containers.find(el => el.textContent.includes({repr(tunnel_name)})) || null;
                 }}
                 """,
                 timeout=TIMEOUT,
