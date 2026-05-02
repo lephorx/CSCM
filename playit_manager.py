@@ -24,18 +24,18 @@ load_dotenv()
 
 log = get_logger("playit")
 
-PLAYIT_EMAIL    = os.getenv("PLAYIT_EMAIL")
-PLAYIT_PASSWORD = os.getenv("PLAYIT_PASSWORD")
-PLAYIT_NETWORK  = os.getenv("PLAYIT_NETWORK", "premium").lower()  # premium | free
-PLAYIT_REGION   = os.getenv("PLAYIT_REGION", "Germany")  # Germany, Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, United Kingdom, Sweden, Poland, Spain, Singapore, Japan, Australia, Sao Paulo, Chile, India
-TUNNEL_NAME     = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
-TUNNEL_PORT     = os.getenv("TUNNEL_PORT", "25565")
+PLAYIT_EMAIL        = os.getenv("PLAYIT_EMAIL")
+PLAYIT_PASSWORD     = os.getenv("PLAYIT_PASSWORD")
+PLAYIT_SUBSCRIPTION = os.getenv("PLAYIT_SUBSCRIPTION", "premium").lower()  # premium | free
+PLAYIT_REGION       = os.getenv("PLAYIT_REGION", "Germany")  # Germany, Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, United Kingdom, Sweden, Poland, Spain, Singapore, Japan, Australia, Sao Paulo, Chile, India
+TUNNEL_NAME         = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
+TUNNEL_PORT         = os.getenv("TUNNEL_PORT", "25565")
 
 # Milliseconds to wait for page elements before raising a timeout error
 TIMEOUT = 30000
 
 
-async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None) -> str | None:
+async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None, subscription: str | None = None) -> str | None:
     """Create a PlayIT tunnel with the given name and local port.
 
     Drives the playit.gg web UI to provision a new Minecraft Java tunnel.
@@ -46,6 +46,8 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
         tunnel_port: Local port the Minecraft server is listening on.
         region: Server region (e.g., "Germany", "Seattle", "Japan").
                 Defaults to PLAYIT_REGION env var or "Germany".
+        subscription: Network subscription level: "premium" or "free".
+                Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
 
     Returns:
         The allocated public address (e.g. ``abc.deu.mcjoin.link``),
@@ -56,6 +58,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
         return None
 
     selected_region = region or PLAYIT_REGION
+    selected_subscription = (subscription or PLAYIT_SUBSCRIPTION).lower()
 
     headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
     log.debug("Browser headless mode: %s", headless)
@@ -111,8 +114,8 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
             await asyncio.sleep(1)
 
             # Select network (Premium or Free)
-            log.debug("Selecting %s network", PLAYIT_NETWORK.upper())
-            if PLAYIT_NETWORK == "free":
+            log.debug("Selecting %s network", selected_subscription.upper())
+            if selected_subscription == "free":
                 await page.click('button.zrkgene:has-text("Free Network")')
             else:
                 await page.click('button.zrkgene:has-text("Premium Network")')
