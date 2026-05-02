@@ -229,7 +229,7 @@ def provision_server(
 
     # Step 4: Create PlayIT tunnel
     log.info("Creating PlayIT tunnel: name=%s, local_port=%d", subdomain, server_port)
-    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port))
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, subscription=subscription))
     if not tunnel_address:
         log.error("PlayIT tunnel creation failed for server db_id=%d", db_server_id)
         return {"success": False, "message": "PlayIT tunnel creation failed", "server_id": db_server_id}
@@ -468,13 +468,15 @@ def list_servers() -> list[dict]:
         conn.close()
 
 
-def create_server_tunnel(db_server_id: int, region: str | None = None) -> dict:
+def create_server_tunnel(db_server_id: int, region: str | None = None, subscription: str | None = None) -> dict:
     """Create a PlayIT tunnel and Cloudflare DNS records for an existing server.
 
     Args:
         db_server_id: Database ID of the server.
         region: Optional server region (e.g., "Germany", "Seattle", "Japan").
                 Defaults to PLAYIT_REGION env var.
+        subscription: Optional network subscription level: "premium" or "free".
+                    Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
     """
     try:
         conn = _get_db()
@@ -494,7 +496,7 @@ def create_server_tunnel(db_server_id: int, region: str | None = None) -> dict:
     subdomain = server_name.lower().replace(" ", "-")
 
     log.info("Creating PlayIT tunnel: name=%s, local_port=%d, region=%s", subdomain, server_port, region or "default")
-    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, region=region))
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, region=region, subscription=subscription))
     if not tunnel_address:
         return {"success": False, "message": "PlayIT tunnel creation failed"}
 

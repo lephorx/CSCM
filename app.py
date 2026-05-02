@@ -136,6 +136,8 @@ def get_servers():
 #                               Default: 25565
 #   mem_min   int     optional  Minimum JVM heap in GB. Default: 2
 #   mem_max   int     optional  Maximum JVM heap in GB. Default: 4
+#   subscription string optional Network subscription level: "premium" or "free".
+#                               Default: premium (from PLAYIT_SUBSCRIPTION env var)
 # ---------------------------------------------------------------------------
 @app.route("/api/servers", methods=["POST"])
 def create_server():
@@ -161,6 +163,7 @@ def create_server():
     port    = body.get("port", 25565)
     mem_min = body.get("mem_min", 2)
     mem_max = body.get("mem_max", 4)
+    subscription = body.get("subscription")
 
     if not isinstance(port, int) or not (1024 <= port <= 65535):
         return jsonify({"error": "'port' must be an integer between 1024 and 65535"}), 400
@@ -169,6 +172,8 @@ def create_server():
         return jsonify({
             "error": "'mem_min' and 'mem_max' must be positive integers with mem_max >= mem_min"
         }), 400
+    if subscription and subscription.lower() not in ("premium", "free"):
+        return jsonify({"error": "'subscription' must be 'premium' or 'free'"}), 400
 
     log.info(
         "Server creation requested: name=%s, type=%s, version=%s, port=%d",
@@ -182,6 +187,7 @@ def create_server():
         server_port=port,
         mem_min=mem_min,
         mem_max=mem_max,
+        subscription=subscription,
     )
 
     if result["success"]:
@@ -411,7 +417,8 @@ def server_logs(server_id: int):
 
 # ---------------------------------------------------------------------------
 # POST /api/servers/<id>/tunnel
-# Body (JSON, optional): { "region": "Germany" | "Seattle" | "Japan" | etc }
+# Body (JSON, optional): { "region": "Germany" | "Seattle" | "Japan" | etc,
+#                           "subscription": "premium" | "free" }
 # ---------------------------------------------------------------------------
 @app.route("/api/servers/<int:server_id>/tunnel", methods=["POST"])
 def create_tunnel_endpoint(server_id: int):
@@ -420,6 +427,8 @@ def create_tunnel_endpoint(server_id: int):
     Optional JSON body:
         region: Server region (e.g., "Germany", "Seattle", "Japan").
                 Defaults to PLAYIT_REGION env var.
+        subscription: Network subscription level: "premium" or "free".
+                    Defaults to PLAYIT_SUBSCRIPTION env var.
     """
     auth_err = _authorize()
     if auth_err:
@@ -427,9 +436,13 @@ def create_tunnel_endpoint(server_id: int):
 
     body = request.get_json(silent=True) or {}
     region = body.get("region")
+    subscription = body.get("subscription")
 
-    log.info("Tunnel creation requested: db_id=%d, region=%s", server_id, region or "default")
-    result = create_server_tunnel(server_id, region=region)
+    if subscription and subscription.lower() not in ("premium", "free"):
+        return jsonify({"error": "'subscription' must be 'premium' or 'free'"}), 400
+
+    log.info("Tunnel creation requested: db_id=%d, region=%s, subscription=%s", server_id, region or "default", subscription or "default")
+    result = create_server_tunnel(server_id, region=region, subscription=subscription)
 
     if result["success"]:
         log.info("Tunnel created: db_id=%d, address=%s", server_id, result.get("connect_address"))
