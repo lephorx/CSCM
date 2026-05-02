@@ -105,6 +105,7 @@ def provision_server(
     server_port: int = 25565,
     mem_min: int = 2,
     mem_max: int = 4,
+    subscription: str | None = None,
 ) -> dict:
     """Provision a complete Minecraft server stack.
 
@@ -118,6 +119,8 @@ def provision_server(
         server_port: Local TCP port for the game server.
         mem_min:     Minimum JVM heap size in GB.
         mem_max:     Maximum JVM heap size in GB.
+        subscription: Network subscription level: "premium" or "free".
+                    Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
 
     Returns:
         A dict containing ``success`` (bool) and ``message`` (str).
