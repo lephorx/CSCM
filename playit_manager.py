@@ -28,6 +28,7 @@ PLAYIT_EMAIL        = os.getenv("PLAYIT_EMAIL")
 PLAYIT_PASSWORD     = os.getenv("PLAYIT_PASSWORD")
 PLAYIT_SUBSCRIPTION = os.getenv("PLAYIT_SUBSCRIPTION", "premium").lower()  # premium | free
 PLAYIT_REGION       = os.getenv("PLAYIT_REGION", "Germany")  # Germany, Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, United Kingdom, Sweden, Poland, Spain, Singapore, Japan, Australia, Sao Paulo, Chile, India
+PLAYIT_AGENT        = os.getenv("PLAYIT_AGENT", "").strip()  # Agent name (optional)
 TUNNEL_NAME         = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
 TUNNEL_PORT         = os.getenv("TUNNEL_PORT", "25565")
 
@@ -35,7 +36,7 @@ TUNNEL_PORT         = os.getenv("TUNNEL_PORT", "25565")
 TIMEOUT = 30000
 
 
-async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None, subscription: str | None = None) -> str | None:
+async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None, subscription: str | None = None, agent: str | None = None) -> str | None:
     """Create a PlayIT tunnel with the given name and local port.
 
     Drives the playit.gg web UI to provision a new Minecraft Java tunnel.
@@ -48,6 +49,8 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
                 Defaults to PLAYIT_REGION env var or "Germany".
         subscription: Network subscription level: "premium" or "free".
                 Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
+        agent: Agent name to use for the tunnel (e.g., "US-East", "EU-Central").
+               Defaults to PLAYIT_AGENT env var or first available agent.
 
     Returns:
         The allocated public address (e.g. ``abc.deu.mcjoin.link``),
@@ -59,6 +62,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
 
     selected_region = region or PLAYIT_REGION
     selected_subscription = (subscription or PLAYIT_SUBSCRIPTION).lower()
+    selected_agent = agent or PLAYIT_AGENT
 
     headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
     log.debug("Browser headless mode: %s", headless)
@@ -135,12 +139,24 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
             await asyncio.sleep(1)
 
             # Select agent
-            log.debug("Selecting agent")
+            log.debug("Selecting agent: %s", selected_agent or "first available")
             await page.click('div._15pr4g9v')
             await asyncio.sleep(1)
-            buttons = await page.query_selector_all('button.maeflab')
-            if buttons:
-                await buttons[-1].click()
+
+            if selected_agent:
+                # Search for agent by name
+                await page.evaluate(f"""
+                    () => {{
+                        const agents = Array.from(document.querySelectorAll('div._15pr4g9v'));
+                        const target = agents.find(el => el.textContent.includes('{selected_agent}'));
+                        if (target) target.click();
+                    }}
+                """)
+            else:
+                # Use first available agent
+                buttons = await page.query_selector_all('button.maeflab')
+                if buttons:
+                    await buttons[-1].click()
             await asyncio.sleep(1)
 
             # Set local port

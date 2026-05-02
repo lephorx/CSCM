@@ -106,6 +106,7 @@ def provision_server(
     mem_min: int = 2,
     mem_max: int = 4,
     subscription: str | None = None,
+    agent: str | None = None,
 ) -> dict:
     """Provision a complete Minecraft server stack.
 
@@ -121,6 +122,8 @@ def provision_server(
         mem_max:     Maximum JVM heap size in GB.
         subscription: Network subscription level: "premium" or "free".
                     Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
+        agent: Agent name for the tunnel (e.g., "US-East", "EU-Central").
+               Defaults to PLAYIT_AGENT env var or first available agent.
 
     Returns:
         A dict containing ``success`` (bool) and ``message`` (str).
@@ -229,7 +232,7 @@ def provision_server(
 
     # Step 4: Create PlayIT tunnel
     log.info("Creating PlayIT tunnel: name=%s, local_port=%d", subdomain, server_port)
-    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, subscription=subscription))
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, subscription=subscription, agent=agent))
     if not tunnel_address:
         log.error("PlayIT tunnel creation failed for server db_id=%d", db_server_id)
         return {"success": False, "message": "PlayIT tunnel creation failed", "server_id": db_server_id}
@@ -468,7 +471,7 @@ def list_servers() -> list[dict]:
         conn.close()
 
 
-def create_server_tunnel(db_server_id: int, region: str | None = None, subscription: str | None = None) -> dict:
+def create_server_tunnel(db_server_id: int, region: str | None = None, subscription: str | None = None, agent: str | None = None) -> dict:
     """Create a PlayIT tunnel and Cloudflare DNS records for an existing server.
 
     Args:
@@ -477,6 +480,8 @@ def create_server_tunnel(db_server_id: int, region: str | None = None, subscript
                 Defaults to PLAYIT_REGION env var.
         subscription: Optional network subscription level: "premium" or "free".
                     Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
+        agent: Optional agent name for the tunnel (e.g., "US-East", "EU-Central").
+               Defaults to PLAYIT_AGENT env var or first available agent.
     """
     try:
         conn = _get_db()
@@ -496,7 +501,7 @@ def create_server_tunnel(db_server_id: int, region: str | None = None, subscript
     subdomain = server_name.lower().replace(" ", "-")
 
     log.info("Creating PlayIT tunnel: name=%s, local_port=%d, region=%s", subdomain, server_port, region or "default")
-    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, region=region, subscription=subscription))
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, region=region, subscription=subscription, agent=agent))
     if not tunnel_address:
         return {"success": False, "message": "PlayIT tunnel creation failed"}
 
