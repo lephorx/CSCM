@@ -411,16 +411,25 @@ def server_logs(server_id: int):
 
 # ---------------------------------------------------------------------------
 # POST /api/servers/<id>/tunnel
+# Body (JSON, optional): { "region": "Germany" | "Seattle" | "Japan" | etc }
 # ---------------------------------------------------------------------------
 @app.route("/api/servers/<int:server_id>/tunnel", methods=["POST"])
 def create_tunnel_endpoint(server_id: int):
-    """Create a PlayIT tunnel and Cloudflare DNS records for a server."""
+    """Create a PlayIT tunnel and Cloudflare DNS records for a server.
+
+    Optional JSON body:
+        region: Server region (e.g., "Germany", "Seattle", "Japan").
+                Defaults to PLAYIT_REGION env var.
+    """
     auth_err = _authorize()
     if auth_err:
         return auth_err
 
-    log.info("Tunnel creation requested: db_id=%d", server_id)
-    result = create_server_tunnel(server_id)
+    body = request.get_json(silent=True) or {}
+    region = body.get("region")
+
+    log.info("Tunnel creation requested: db_id=%d, region=%s", server_id, region or "default")
+    result = create_server_tunnel(server_id, region=region)
 
     if result["success"]:
         log.info("Tunnel created: db_id=%d, address=%s", server_id, result.get("connect_address"))
