@@ -26,6 +26,7 @@ log = get_logger("playit")
 
 PLAYIT_EMAIL    = os.getenv("PLAYIT_EMAIL")
 PLAYIT_PASSWORD = os.getenv("PLAYIT_PASSWORD")
+PLAYIT_NETWORK  = os.getenv("PLAYIT_NETWORK", "premium").lower()  # premium | free
 TUNNEL_NAME     = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
 TUNNEL_PORT     = os.getenv("TUNNEL_PORT", "25565")
 
@@ -104,9 +105,12 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             await page.click('button[type="submit"]')
             await asyncio.sleep(1)
 
-            # Select Premium Network
-            log.debug("Selecting Premium Network")
-            await page.click('button.zrkgene')
+            # Select network (Premium or Free)
+            log.debug("Selecting %s network", PLAYIT_NETWORK.upper())
+            if PLAYIT_NETWORK == "free":
+                await page.click('button.zrkgene:has-text("Free Network")')
+            else:
+                await page.click('button.zrkgene:has-text("Premium Network")')
             await asyncio.sleep(1)
 
             # Select Germany / Europe region
@@ -148,7 +152,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             await page.wait_for_function("""
                 () => {
                     const el = document.querySelector('span.lm6flc4');
-                    return el && el.textContent.includes('.mcjoin.link')
+                    return el && (el.textContent.includes('.mcjoin.link') || el.textContent.includes('.joinmc.link'))
                         ? el.textContent.trim()
                         : null;
                 }
