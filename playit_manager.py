@@ -26,6 +26,8 @@ log = get_logger("playit")
 
 PLAYIT_EMAIL    = os.getenv("PLAYIT_EMAIL")
 PLAYIT_PASSWORD = os.getenv("PLAYIT_PASSWORD")
+PLAYIT_NETWORK  = os.getenv("PLAYIT_NETWORK", "premium").lower()  # premium | free
+PLAYIT_REGION   = os.getenv("PLAYIT_REGION", "Germany")  # Germany, Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, United Kingdom, Sweden, Poland, Spain, Singapore, Japan, Australia, Sao Paulo, Chile, India
 TUNNEL_NAME     = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
 TUNNEL_PORT     = os.getenv("TUNNEL_PORT", "25565")
 
@@ -33,7 +35,7 @@ TUNNEL_PORT     = os.getenv("TUNNEL_PORT", "25565")
 TIMEOUT = 30000
 
 
-async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
+async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None) -> str | None:
     """Create a PlayIT tunnel with the given name and local port.
 
     Drives the playit.gg web UI to provision a new Minecraft Java tunnel.
@@ -42,6 +44,8 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
         tunnel_name: Human-readable label for the tunnel (used as the tunnel
                      name inside the playit.gg dashboard).
         tunnel_port: Local port the Minecraft server is listening on.
+        region: Server region (e.g., "Germany", "Seattle", "Japan").
+                Defaults to PLAYIT_REGION env var or "Germany".
 
     Returns:
         The allocated public address (e.g. ``abc.deu.mcjoin.link``),
@@ -50,6 +54,8 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
     if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
         log.error("PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables are required")
         return None
+
+    selected_region = region or PLAYIT_REGION
 
     headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
     log.debug("Browser headless mode: %s", headless)
@@ -104,19 +110,22 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             await page.click('button[type="submit"]')
             await asyncio.sleep(1)
 
-            # Select Premium Network
-            log.debug("Selecting Premium Network")
-            await page.click('button.zrkgene')
+            # Select network (Premium or Free)
+            log.debug("Selecting %s network", PLAYIT_NETWORK.upper())
+            if PLAYIT_NETWORK == "free":
+                await page.click('button.zrkgene:has-text("Free Network")')
+            else:
+                await page.click('button.zrkgene:has-text("Premium Network")')
             await asyncio.sleep(1)
 
-            # Select Germany / Europe region
-            log.debug("Selecting Germany / Europe region")
-            await page.evaluate("""
-                () => {
+            # Select region
+            log.debug("Selecting region: %s", selected_region)
+            await page.evaluate(f"""
+                () => {{
                     const regions = Array.from(document.querySelectorAll('div._15pr4g9g'));
-                    const target = regions.find(el => el.textContent.includes('Germany'));
+                    const target = regions.find(el => el.textContent.includes('{selected_region}'));
                     if (target) target.click();
-                }
+                }}
             """)
             await asyncio.sleep(1)
             await page.click('button.maeflab')
@@ -148,7 +157,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str) -> str | None:
             await page.wait_for_function("""
                 () => {
                     const el = document.querySelector('span.lm6flc4');
-                    return el && el.textContent.includes('.mcjoin.link')
+                    return el && (el.textContent.includes('.mcjoin.link') || el.textContent.includes('.joinmc.link'))
                         ? el.textContent.trim()
                         : null;
                 }

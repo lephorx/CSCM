@@ -465,8 +465,14 @@ def list_servers() -> list[dict]:
         conn.close()
 
 
-def create_server_tunnel(db_server_id: int) -> dict:
-    """Create a PlayIT tunnel and Cloudflare DNS records for an existing server."""
+def create_server_tunnel(db_server_id: int, region: str | None = None) -> dict:
+    """Create a PlayIT tunnel and Cloudflare DNS records for an existing server.
+
+    Args:
+        db_server_id: Database ID of the server.
+        region: Optional server region (e.g., "Germany", "Seattle", "Japan").
+                Defaults to PLAYIT_REGION env var.
+    """
     try:
         conn = _get_db()
         cur  = conn.cursor()
@@ -484,8 +490,8 @@ def create_server_tunnel(db_server_id: int) -> dict:
     server_name, server_port = row
     subdomain = server_name.lower().replace(" ", "-")
 
-    log.info("Creating PlayIT tunnel: name=%s, local_port=%d", subdomain, server_port)
-    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port))
+    log.info("Creating PlayIT tunnel: name=%s, local_port=%d, region=%s", subdomain, server_port, region or "default")
+    tunnel_address = asyncio.run(create_tunnel(tunnel_name=subdomain, tunnel_port=server_port, region=region))
     if not tunnel_address:
         return {"success": False, "message": "PlayIT tunnel creation failed"}
 
