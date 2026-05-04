@@ -19,6 +19,8 @@
   - [Server Types](#server-types)
   - [Servers — CRUD](#servers--crud)
   - [Server Control](#server-control)
+  - [Server Modification](#server-modification)
+  - [Server Networking](#server-networking)
   - [File Management](#file-management)
 - [Schemas](#schemas)
 - [Frontend Integration Guide](#frontend-integration-guide)
@@ -102,94 +104,195 @@ Or for validation errors:
 
 ### Native (no Docker)
 
+**Step 1: Clone the repository**
+
 ```bash
-# 1. Clone the repository
 git clone https://github.com/your-org/CSCM-Tool.git
 cd CSCM-Tool
+```
 
-# 2. Create and activate a virtual environment
+**Step 2: Create and activate a virtual environment**
+
+```bash
 python3 -m venv venv
 source venv/bin/activate
+```
 
-# 3. Install dependencies
+**Step 3: Install Python dependencies**
+
+```bash
 pip install -r requirements.txt
+```
 
-# 4. Install Playwright's Chromium browser
+**Step 4: Install Playwright browser (required for PlayIT automation)**
+
+```bash
 playwright install chromium --with-deps
+```
 
-# 5. Copy and fill in the environment file
+> If this fails on Linux, you may need system dependencies. See [Playwright docs](https://playwright.dev/python/docs/intro).
+
+**Step 5: Configure environment variables**
+
+```bash
 cp .env.example .env
+# Edit .env with your Crafty, Neon, PlayIT, and Cloudflare credentials
 nano .env
+```
 
-# 6. Start the API
+Key things to check:
+
+- `BASE_URL`: Set to `https://localhost:8443` (or your Crafty Controller address)
+- `CRAFTY_SERVERS_DIR`: Must match your Crafty installation directory
+- `PLAYIT_EMAIL` / `PLAYIT_PASSWORD`: Your PlayIT account credentials
+- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_BASE_DOMAIN`: Cloudflare setup
+
+**Step 6: Test the database connection**
+
+```bash
+python3 -c "from server_manager import _get_db; conn = _get_db(); print('Database connected'); conn.close()"
+```
+
+If this fails, check your `DB_*` environment variables in `.env`.
+
+**Step 7: Start the API**
+
+```bash
 python app.py
+```
+
+The server will start on `http://0.0.0.0:5000` by default. Test it:
+
+```bash
+curl http://localhost:5000/health
+```
+
+You should see:
+
+```json
+{ "status": "ok", "message": "CSCM API is healthy" }
 ```
 
 ---
 
 ### Docker
 
+**Step 1: Clone the repository**
+
 ```bash
-# 1. Clone the repository
 git clone https://github.com/your-org/CSCM-Tool.git
 cd CSCM-Tool
+```
 
-# 2. Fill in the environment file
+**Step 2: Configure environment variables**
+
+```bash
 cp .env.example .env
 nano .env
+```
 
-# 3. Make sure BASE_URL points to the host (not localhost)
-# In .env:  BASE_URL=https://host.docker.internal:8443
+**Important for Docker:** If Crafty Controller is running on the host machine, set:
 
-# 4. Build and start
+```env
+BASE_URL=https://host.docker.internal:8443
+```
+
+This allows the container to reach the host's localhost.
+
+**Step 3: Build and start**
+
+```bash
+# Build and start in background
 docker compose up -d --build
 
-# 5. View logs
+# View logs
 docker compose logs -f
 
-# 6. Stop
+# Stop
 docker compose down
 ```
 
-The Crafty servers directory is mounted read-only inside the container at `/crafty/servers`. To enable file uploads and deletions, change `:ro` to `:rw` in `docker-compose.yml`.
+**Step 4: Test the API**
+
+```bash
+curl http://localhost:5000/health
+```
+
+**Troubleshooting Docker:**
+
+- **"Cannot reach Crafty"**: Make sure `BASE_URL=https://host.docker.internal:8443` in `.env`
+- **"Permission denied" on file uploads**: The Crafty servers directory is mounted read-only (`:ro`). To enable uploads, edit `docker-compose.yml` and change `:ro` to `:rw`:
+
+  ```yaml
+  volumes:
+    - /var/opt/minecraft/crafty/crafty-4/servers:/crafty/servers:rw
+  ```
+
+- **"Playwright not found"**: The Docker image pre-installs Playwright. If you see this, rebuild: `docker compose up --build`
 
 ---
 
 ### Environment Variables
 
-Create a `.env` file in the project root with the following variables:
+Create a `.env` file in the project root with the following variables. Copy from `.env.example` for a template:
+
+```bash
+cp .env.example .env
+# Then edit with your values
+```
+
+**CSCM API Configuration:**
 
 ```env
-# ── CSCM API ──────────────────────────────────────────────────────────────────
-API_KEY=your_static_bearer_token          # Required in production
-FLASK_HOST=0.0.0.0                        # Bind address
+API_KEY=your_static_bearer_token          # Bearer token for authentication (required in production)
+FLASK_HOST=0.0.0.0                        # Bind address (0.0.0.0 for all interfaces)
 FLASK_PORT=5000                           # Listen port
-FLASK_DEBUG=false                         # Enable Flask debug mode
+FLASK_DEBUG=false                         # Enable debug mode (true/false)
 LOG_LEVEL=INFO                            # DEBUG | INFO | WARNING | ERROR
+```
 
-# ── Crafty Controller ─────────────────────────────────────────────────────────
-BASE_URL=https://localhost:8443           # Crafty base URL
-                                          # Use https://host.docker.internal:8443 in Docker
+**Crafty Controller Configuration:**
+
+```env
+BASE_URL=https://localhost:8443           # Crafty API base URL
+                                          # For Docker, use: https://host.docker.internal:8443
 CRAFTY_USER=admin                         # Crafty admin username
-CRAFTY_PASS=your_crafty_password          # Crafty admin password
-CRAFTY_SERVERS_DIR=/var/opt/minecraft/crafty/crafty-4/servers  # Server files root
+CRAFTY_PASS=your_password                 # Crafty admin password
+CRAFTY_SERVERS_DIR=/var/opt/minecraft/crafty/crafty-4/servers
+                                          # Path to Crafty servers directory on host
+```
 
-# ── Neon PostgreSQL ───────────────────────────────────────────────────────────
-DB_NAME=your_db_name
-DB_USER=your_db_user
+**PostgreSQL / Neon Database:**
+
+```env
+DB_NAME=your_database_name
+DB_USER=your_db_username
 DB_PASSWORD=your_db_password
-DB_HOST=your_neon_host.neon.tech
+DB_HOST=your_host.neon.tech              # For Neon: xxx.neon.tech
 DB_PORT=5432
+```
 
-# ── PlayIT ────────────────────────────────────────────────────────────────────
-PLAYIT_EMAIL=your@email.com
+**PlayIT Configuration:**
+
+```env
+PLAYIT_EMAIL=your_email@example.com
 PLAYIT_PASSWORD=your_playit_password
-PLAYIT_HEADLESS=true                      # Set to false to watch the browser
+PLAYIT_HEADLESS=true                     # Set to false to watch browser during automation
+PLAYIT_SUBSCRIPTION=premium               # premium | free
+PLAYIT_REGION=Germany                    # Region for tunnel (premium only)
+                                         # Options: Seattle, Los Angeles, Denver, Dallas,
+                                         # Chicago, New York, Miami, Germany, United Kingdom,
+                                         # Sweden, Poland, Spain, Singapore, Japan,
+                                         # Australia, Sao Paulo, Chile, India
+PLAYIT_AGENT=                            # Optional: agent name (leave empty for first available)
+```
 
-# ── Cloudflare ────────────────────────────────────────────────────────────────
+**Cloudflare Configuration:**
+
+```env
 CLOUDFLARE_API_TOKEN=your_cf_api_token
-CLOUDFLARE_ZONE_ID=your_cf_zone_id
-CLOUDFLARE_DOMAIN=example.com            # Root domain (e.g. homeops.services)
+CLOUDFLARE_ZONE_ID=your_zone_id
+CLOUDFLARE_BASE_DOMAIN=example.com       # Root domain (e.g., homeops.services)
 ```
 
 ---
@@ -504,6 +607,209 @@ Returns the server's console log output.
     "[08:55:25] [Server thread/INFO]: Done (2.341s)! For help, type \"help\""
   ]
 }
+```
+
+---
+
+### Server Modification
+
+These endpoints modify server configuration. Use the database `server_id` (integer).
+
+#### `PATCH /api/servers/<id>/name`
+
+Renames a server in both Crafty Controller and the database.
+
+**Request body (JSON):**
+
+| Field  | Type   | Required | Description     |
+| ------ | ------ | -------- | --------------- |
+| `name` | string | ✅       | New server name |
+
+**Example request:**
+
+```json
+{ "name": "My New Server Name" }
+```
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "message": "Server renamed to 'My New Server Name'"
+}
+```
+
+**Response `404`:**
+
+```json
+{ "success": false, "message": "Server not found" }
+```
+
+---
+
+#### `PATCH /api/servers/<id>/port`
+
+Changes the server's listening port in Crafty and the database.
+
+**Request body (JSON):**
+
+| Field  | Type    | Required | Description           |
+| ------ | ------- | -------- | --------------------- |
+| `port` | integer | ✅       | New port (1024–65535) |
+
+**Example request:**
+
+```json
+{ "port": 25566 }
+```
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "message": "Port updated to 25566"
+}
+```
+
+**Response `400` — Invalid port:**
+
+```json
+{
+  "success": false,
+  "message": "'port' must be an integer between 1024 and 65535"
+}
+```
+
+---
+
+#### `PATCH /api/servers/<id>/ram`
+
+Modifies the JVM heap allocation (minimum and maximum memory).
+
+**Request body (JSON):**
+
+| Field     | Type    | Required | Description            |
+| --------- | ------- | -------- | ---------------------- |
+| `mem_min` | integer | ✅       | Minimum JVM heap in GB |
+| `mem_max` | integer | ✅       | Maximum JVM heap in GB |
+
+**Example request:**
+
+```json
+{ "mem_min": 4, "mem_max": 8 }
+```
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "message": "RAM updated: 4GB min, 8GB max",
+  "execution_command": "java -Xms4000M -Xmx8000M ..."
+}
+```
+
+**Response `400` — Invalid configuration:**
+
+```json
+{
+  "success": false,
+  "message": "No -Xms/-Xmx flags found in execution command. For Forge servers, edit user_jvm_args.txt directly.",
+  "execution_command": "..."
+}
+```
+
+---
+
+### Server Networking
+
+#### `POST /api/servers/<id>/tunnel`
+
+Creates (or recreates) a PlayIT tunnel and Cloudflare DNS records for a server. This enables external players to connect to your server.
+
+**Request body (JSON, optional):**
+
+| Field          | Type   | Required | Default                       | Description                                |
+| -------------- | ------ | -------- | ----------------------------- | ------------------------------------------ |
+| `region`       | string | ❌       | `PLAYIT_REGION` env var       | Tunnel region (premium subscriptions only) |
+| `subscription` | string | ❌       | `PLAYIT_SUBSCRIPTION` env var | `premium` or `free`                        |
+| `agent`        | string | ❌       | First available agent         | PlayIT agent name                          |
+
+**Example request (minimal):**
+
+```json
+{}
+```
+
+**Example request (premium with region):**
+
+```json
+{
+  "region": "Germany",
+  "subscription": "premium",
+  "agent": "EU-Central"
+}
+```
+
+**Response `201`:**
+
+```json
+{
+  "success": true,
+  "connect_address": "paper-server.homeops.services",
+  "tunnel_address": "single-washstand.deu.mcjoin.link",
+  "external_port": 5474
+}
+```
+
+**Response `404`:**
+
+```json
+{ "success": false, "message": "No server found with ID 44" }
+```
+
+---
+
+#### `PATCH /api/servers/<id>/subdomain`
+
+Renames the Cloudflare DNS subdomain for a server (changes the `<subdomain>` part of `<subdomain>.example.com`).
+
+**Request body (JSON):**
+
+| Field       | Type   | Required | Description               |
+| ----------- | ------ | -------- | ------------------------- |
+| `subdomain` | string | ✅       | New subdomain (lowercase) |
+
+**Example request:**
+
+```json
+{ "subdomain": "awesome-server" }
+```
+
+**Response `200`:**
+
+```json
+{
+  "success": true,
+  "message": "Subdomain updated to 'awesome-server.example.com'"
+}
+```
+
+**Response `400` — Empty subdomain:**
+
+```json
+{
+  "success": false,
+  "message": "'subdomain' is required"
+}
+```
+
+**Response `404`:**
+
+```json
+{ "success": false, "message": "No server found with ID 44" }
 ```
 
 ---
