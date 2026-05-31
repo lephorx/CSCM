@@ -1,40 +1,21 @@
-"""
-Flask REST API for the CSCM (Crafty Server Creation Manager) Tool.
-
-Endpoints:
-    GET    /api/server-types              List supported Minecraft server types.
-    GET    /api/servers                   List all provisioned servers.
-    POST   /api/servers                   Provision a new server.
-    DELETE /api/servers/<id>              Deprovision a server by database ID.
-    POST   /api/servers/<id>/start        Start a server.
-    POST   /api/servers/<id>/stop         Stop a server.
-    POST   /api/servers/<id>/restart      Restart a server.
-    POST   /api/servers/<id>/kill         Force-kill a server.
-    POST   /api/servers/<id>/command      Send a console command to a server.
-    GET    /api/servers/<id>/stats        Get a server's live stats.
-    GET    /api/servers/<id>/logs         Get a server's console logs.
-
-Authentication:
-    All endpoints require an ``Authorization: Bearer <token>`` header when the
-    ``API_KEY`` environment variable is set.  Omit API_KEY to disable auth
-    (development only).
-
-Environment variables:
-    API_KEY      — Static bearer token for request authentication (optional).
-    FLASK_HOST   — Bind address (default: 0.0.0.0).
-    FLASK_PORT   — Listen port (default: 5000).
-    FLASK_DEBUG  — Enable Flask debug mode; set to "true" (default: false).
-    LOG_LEVEL    — Logging verbosity: DEBUG, INFO, WARNING, ERROR (default: INFO).
-"""
+"""Flask REST API for the CSCM Tool with local-user JWT and TOTP auth."""
 
 import os
 import requests
 import urllib3
 from pathlib import Path
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, g, jsonify, render_template, request, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 
+from auth_manager import (
+    authenticate_user,
+    create_initial_user,
+    has_users,
+    initialize_auth_storage,
+    issue_jwt,
+    verify_jwt,
+)
 from server_manager import (
     provision_server, deprovision_server, list_servers, SERVER_TYPES,
     crafty_login, _get_db, create_server_tunnel, rename_server_subdomain,
@@ -50,28 +31,40 @@ log = get_logger("api")
 app = Flask(__name__)
 CORS(app)
 
-API_KEY = os.getenv("API_KEY")
+initialize_auth_storage()
+
+
+def _extract_bearer_token() -> str | None:
+    authorization = request.headers.get("Authorization", "").strip()
+    if not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:].strip()
+    return token or None
 
 
 def _authorize() -> tuple | None:
-    """Validate the Authorization header when API_KEY is configured.
-
-    Returns:
-        A (response, status_code) tuple when authentication fails,
-        or ``None`` when the request is authorized.
-    """
-    if not API_KEY:
-        return None
-    # OPTIONS preflight requests must not be blocked — CORS headers are added
-    # by flask-cors after the response is built.
+    """Validate a JWT bearer token for protected API routes."""
     if request.method == "OPTIONS":
         return None
-    if request.headers.get("Authorization") != f"Bearer {API_KEY}":
+    if not has_users():
+        return jsonify({"error": "Setup required", "setup_required": True}), 403
+
+    token = _extract_bearer_token()
+    if not token:
+        log.warning(
+            "Missing bearer token: method=%s path=%s remote=%s",
+            request.method, request.path, request.remote_addr,
+        )
+        return jsonify({"error": "Unauthorized"}), 401
+
+    user = verify_jwt(token)
+    if not user:
         log.warning(
             "Unauthorized request: method=%s path=%s remote=%s",
             request.method, request.path, request.remote_addr,
         )
         return jsonify({"error": "Unauthorized"}), 401
+    g.current_user = user
     return None
 
 
@@ -86,9 +79,99 @@ def _log_request() -> None:
 # GET /
 # ---------------------------------------------------------------------------
 @app.route("/", methods=["GET"])
-def health_check():
-    """Basic health check endpoint."""
-    return jsonify({"status": "ok", "message": "CSCM API is running"})
+def index():
+    """Serve the authentication bootstrap UI."""
+    return render_template("index.html")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/auth/status
+# ---------------------------------------------------------------------------
+@app.route("/api/auth/status", methods=["GET"])
+def auth_status():
+    """Return whether initial setup is required and whether the caller is authenticated."""
+    token = _extract_bearer_token()
+    current_user = verify_jwt(token) if token else None
+    return jsonify({
+        "setup_required": not has_users(),
+        "authenticated": current_user is not None,
+        "user": current_user,
+    })
+
+
+# ---------------------------------------------------------------------------
+# POST /api/auth/setup
+# ---------------------------------------------------------------------------
+@app.route("/api/auth/setup", methods=["POST"])
+def setup_auth():
+    """Create the first local user and return TOTP bootstrap details."""
+    if has_users():
+        return jsonify({"error": "Initial setup has already been completed"}), 409
+
+    body = request.get_json(silent=True) or {}
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+
+    try:
+        setup_payload = create_initial_user(username, password)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+    log.info("Initial user created: username=%s", username)
+    return jsonify({
+        "success": True,
+        "message": "Initial account created. Scan the QR code and then sign in with your one-time password.",
+        **setup_payload,
+    }), 201
+
+
+# ---------------------------------------------------------------------------
+# POST /api/auth/login
+# ---------------------------------------------------------------------------
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    """Authenticate a local user with username, password, and TOTP."""
+    if not has_users():
+        return jsonify({"error": "Setup required", "setup_required": True}), 403
+
+    body = request.get_json(silent=True) or {}
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+    otp_code = str(body.get("otp", "")).strip()
+
+    if not username or not password or not otp_code:
+        return jsonify({"error": "'username', 'password', and 'otp' are required"}), 400
+
+    user = authenticate_user(username, password, otp_code)
+    if not user:
+        log.warning("Failed login for username=%s", username)
+        return jsonify({"error": "Invalid username, password, or one-time password"}), 401
+
+    token, expires_at = issue_jwt(user["id"], user["username"])
+    log.info("User logged in: username=%s", user["username"])
+    return jsonify({
+        "success": True,
+        "token": token,
+        "token_type": "Bearer",
+        "expires_at": expires_at,
+        "user": user,
+    })
+
+
+# ---------------------------------------------------------------------------
+# GET /api/auth/me
+# ---------------------------------------------------------------------------
+@app.route("/api/auth/me", methods=["GET"])
+def auth_me():
+    """Return the authenticated user for the supplied JWT."""
+    auth_err = _authorize()
+    if auth_err:
+        return auth_err
+    return jsonify({"authenticated": True, "user": g.current_user})
+
+
 # ---------------------------------------------------------------------------
 # GET /health
 # ---------------------------------------------------------------------------
