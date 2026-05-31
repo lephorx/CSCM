@@ -4,6 +4,16 @@ const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
 const BEARER_TOKEN = process.env.BEARER_TOKEN ?? ""
 
 async function proxy(req: NextRequest, segments: string[]) {
+  const isAuthRoute = segments[0] === "auth"
+
+  // Non-auth routes require the user to have a JWT (real verification is on the backend)
+  if (!isAuthRoute) {
+    const authHeader = req.headers.get("authorization")
+    if (!authHeader?.startsWith("Bearer ")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+  }
+
   const path = segments.join("/")
   // Decode %2F back to / so the backend receives path=/ not path=%2F
   const search = req.nextUrl.search.replace(/%2F/gi, "/")
@@ -14,7 +24,17 @@ async function proxy(req: NextRequest, segments: string[]) {
     ?.includes("multipart/form-data")
 
   const headers = new Headers()
-  headers.set("Authorization", `Bearer ${BEARER_TOKEN}`)
+
+  if (isAuthRoute) {
+    // Pass the original Authorization header through so the backend can verify user JWTs
+    // (e.g. for /api/auth/me). Public auth routes (status, setup, login) ignore it.
+    const authHeader = req.headers.get("authorization")
+    if (authHeader) headers.set("Authorization", authHeader)
+  } else {
+    // Inject the static backend API key for all other routes
+    headers.set("Authorization", `Bearer ${BEARER_TOKEN}`)
+  }
+
   if (!isFormData) {
     const ct = req.headers.get("content-type")
     if (ct) headers.set("content-type", ct)

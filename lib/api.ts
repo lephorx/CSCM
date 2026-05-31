@@ -3,6 +3,7 @@ import type { CreateServerPayload } from "./types"
 // All requests go to the local Next.js proxy route (/app/api/[...path]/route.ts)
 // which runs server-side and injects the BEARER_TOKEN before forwarding to the backend.
 const API_BASE = "/api"
+const JWT_KEY = "cscm_jwt"
 
 // Encode each path segment but keep slashes so the backend receives e.g. path=/world/region
 // not path=%2Fworld%2Fregion
@@ -11,6 +12,11 @@ const encodePath = (p: string) =>
     .split("/")
     .map((seg) => encodeURIComponent(seg))
     .join("/")
+
+function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null
+  return localStorage.getItem(JWT_KEY)
+}
 
 async function apiCall(endpoint: string, options: RequestInit = {}) {
   const isFormData = options.body instanceof FormData
@@ -23,11 +29,23 @@ async function apiCall(endpoint: string, options: RequestInit = {}) {
     headers["Content-Type"] = "application/json"
   }
 
+  const token = getStoredToken()
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`
+  }
+
   const res = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     headers,
     cache: "no-store",
   })
+
+  // If the server signals an invalid/expired token, clear it and reload
+  if (res.status === 401 && typeof window !== "undefined") {
+    localStorage.removeItem(JWT_KEY)
+    window.location.reload()
+    return
+  }
 
   if (!res.ok) {
     let message = `API error: ${res.status}`
@@ -124,4 +142,51 @@ export const api = {
     },
   },
   health: () => fetch("/health").then((r) => r.json()),
+}
+
+// ---------------------------------------------------------------------------
+// Token helpers
+// ---------------------------------------------------------------------------
+
+export function saveToken(token: string) {
+  if (typeof window !== "undefined") {
+    localStorage.setItem(JWT_KEY, token)
+  }
+}
+
+export function clearToken() {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(JWT_KEY)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auth API (these routes are handled locally by Next.js, not proxied)
+// ---------------------------------------------------------------------------
+
+async function authFetch(endpoint: string, options: RequestInit = {}) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string>),
+  }
+  const token = getStoredToken()
+  if (token) headers["Authorization"] = `Bearer ${token}`
+
+  const res = await fetch(endpoint, { ...options, headers, cache: "no-store" })
+  return { ok: res.ok, status: res.status, data: await res.json() }
+}
+
+export const authApi = {
+  status: () => authFetch("/api/auth/status"),
+  setup: (username: string, password: string) =>
+    authFetch("/api/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    }),
+  login: (username: string, password: string, otp: string) =>
+    authFetch("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password, otp }),
+    }),
+  me: () => authFetch("/api/auth/me"),
 }

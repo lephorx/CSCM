@@ -7,12 +7,24 @@ import { Button } from "@/components/ui/button"
 import { TopNav } from "@/components/TopNav"
 import { ServerCard } from "@/components/ServerCard"
 import { ServerCreateModal } from "@/components/ServerCreateModal"
+import { AuthPage } from "@/components/AuthPage"
 import { api } from "@/lib/api"
+import { useAuth } from "@/hooks/useAuth"
 import type { Server, ServerStats } from "@/lib/types"
 
 const POLL_INTERVAL = 5000
 
 export default function DashboardPage() {
+  const {
+    loading: authLoading,
+    setupRequired,
+    authenticated,
+    user,
+    onLoginSuccess,
+    onSetupComplete,
+    logout,
+  } = useAuth()
+
   const [servers, setServers] = useState<Server[]>([])
   const [statsMap, setStatsMap] = useState<Record<number, ServerStats>>({})
   const [loading, setLoading] = useState(true)
@@ -48,16 +60,37 @@ export default function DashboardPage() {
   }, [])
 
   useEffect(() => {
+    if (!authenticated) return
     fetchServers()
     intervalRef.current = setInterval(fetchServers, POLL_INTERVAL)
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [fetchServers])
+  }, [fetchServers, authenticated])
+
+  // Show a full-screen spinner while checking auth
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // Show auth page when setup is required or user is not authenticated
+  if (setupRequired || !authenticated) {
+    return (
+      <AuthPage
+        initialView={setupRequired ? "setup-form" : "login-form"}
+        onLoginSuccess={onLoginSuccess}
+        onSetupComplete={onSetupComplete}
+      />
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background">
-      <TopNav />
+      <TopNav user={user} onLogout={logout} />
 
       <main className="mx-auto max-w-screen-xl px-6 py-8">
         {/* Page header */}

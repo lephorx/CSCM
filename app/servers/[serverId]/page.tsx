@@ -10,6 +10,7 @@ import { TopNav } from "@/components/TopNav"
 import { Console } from "@/components/Console"
 import { FileExplorer } from "@/components/FileExplorer"
 import { ServerStats } from "@/components/ServerStats"
+import { AuthPage } from "@/components/AuthPage"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
@@ -22,6 +23,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
+import { useAuth } from "@/hooks/useAuth"
 import type { Server, ServerStats as Stats } from "@/lib/types"
 
 const POLL_INTERVAL = 5000
@@ -29,6 +31,16 @@ const POLL_INTERVAL = 5000
 export default function ServerDetailPage() {
   const params = useParams()
   const serverId = Number(params?.serverId)
+
+  const {
+    loading: authLoading,
+    setupRequired,
+    authenticated,
+    user,
+    onLoginSuccess,
+    onSetupComplete,
+    logout,
+  } = useAuth()
 
   const [server, setServer] = useState<Server | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
@@ -68,7 +80,7 @@ export default function ServerDetailPage() {
   }, [serverId])
 
   useEffect(() => {
-    if (isNaN(serverId)) return
+    if (isNaN(serverId) || !authenticated) return
 
     // Load server list to get this server's metadata
     api.servers
@@ -223,6 +235,24 @@ export default function ServerDetailPage() {
     }
   }
 
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (setupRequired || !authenticated) {
+    return (
+      <AuthPage
+        initialView={setupRequired ? "setup-form" : "login-form"}
+        onLoginSuccess={onLoginSuccess}
+        onSetupComplete={onSetupComplete}
+      />
+    )
+  }
+
   if (loadingServer) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
@@ -235,7 +265,7 @@ export default function ServerDetailPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
-      <TopNav />
+      <TopNav user={user} onLogout={logout} />
 
       <main className="mx-auto w-full max-w-screen-xl flex-1 px-6 py-8">
         {/* Breadcrumb + header */}
