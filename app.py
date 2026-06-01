@@ -57,6 +57,7 @@ def _authorize() -> tuple | None:
         )
         return jsonify({"error": "Unauthorized"}), 401
 
+    log.debug("Verifying token (first 20 chars): %.20s", token)
     user = verify_jwt(token)
     if not user:
         log.warning(

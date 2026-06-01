@@ -158,13 +158,16 @@ def issue_jwt(user_id: int, username: str) -> tuple[str, int]:
 
 
 def verify_jwt(token: str) -> dict | None:
+    import logging as _logging
+    _log = _logging.getLogger("cscm.api")
     try:
         payload = jwt.decode(
             token,
             _get_or_create_config("jwt_secret", secrets.token_urlsafe(64)),
             algorithms=["HS256"],
         )
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as exc:
+        _log.warning("JWT verification failed: %s: %s", type(exc).__name__, exc)
         return None
 
     return {
