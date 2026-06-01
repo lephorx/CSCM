@@ -39,6 +39,9 @@ def _extract_bearer_token() -> str | None:
     if not authorization.startswith("Bearer "):
         return None
     token = authorization[7:].strip()
+    # Guard against double-prefixed tokens ("Bearer Bearer eyJ...")
+    if token.startswith("Bearer "):
+        token = token[7:].strip()
     return token or None
 
 
