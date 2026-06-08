@@ -39,23 +39,40 @@ All API endpoints are prefixed with `/api`.
 
 ## Authentication
 
-Every endpoint (except `GET /` and `GET /health`) requires a static bearer token when `API_KEY` is configured in the environment.
+The application now uses a local authentication database, JWT bearer tokens, and TOTP multi-factor authentication.
 
-**Header:**
+### First run
+
+Open `/` in a browser. If no local user exists yet, CSCM shows a setup page that requires you to create the first administrator username and password. After setup, the page returns:
+
+- A QR code for authenticator apps such as 1Password, Authy, Google Authenticator, or Microsoft Authenticator
+- A manual TOTP secret you can enter if QR scanning is unavailable
+
+### Sign in
+
+After the first user is created, sign in with:
+
+- Username
+- Password
+- Current 6-digit TOTP code
+
+Successful login returns a JWT. Use it for all protected API endpoints:
 
 ```
-Authorization: Bearer <your_api_key>
+Authorization: Bearer <jwt_token>
 ```
 
-**Example:**
+If no user exists yet, protected endpoints return:
 
+```json
+HTTP 403
+{
+  "error": "Setup required",
+  "setup_required": true
+}
 ```
-Authorization: Bearer iNn6XZBucG6PoZb98qz3A9W9G
-```
 
-If `API_KEY` is not set, all requests are accepted without authentication (**development only — never do this in production**).
-
-**Unauthorized response:**
+If the token is missing or invalid, protected endpoints return:
 
 ```json
 HTTP 401
@@ -244,10 +261,12 @@ cp .env.example .env
 **CSCM API Configuration:**
 
 ```env
-API_KEY=your_static_bearer_token          # Bearer token for authentication (required in production)
 FLASK_HOST=0.0.0.0                        # Bind address (0.0.0.0 for all interfaces)
 FLASK_PORT=5000                           # Listen port
 FLASK_DEBUG=false                         # Enable debug mode (true/false)
+AUTH_DB_PATH=auth.db                      # Local SQLite database for usernames, hashes, and TOTP secrets
+JWT_LIFETIME_HOURS=8                      # JWT expiry window
+TOTP_ISSUER=CSCM Tool                     # Label shown in authenticator apps
 LOG_LEVEL=INFO                            # DEBUG | INFO | WARNING | ERROR
 ```
 
