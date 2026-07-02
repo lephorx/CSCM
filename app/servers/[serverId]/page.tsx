@@ -99,7 +99,7 @@ export default function ServerDetailPage() {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [serverId, fetchStats])
+  }, [serverId, authenticated, fetchStats])
 
   const isRunning = stats?.running ?? false
 
