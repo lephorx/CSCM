@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
+const BEARER_TOKEN = process.env.BEARER_TOKEN ?? ""
 
 async function proxy(req: NextRequest, segments: string[]) {
   const isAuthRoute = segments[0] === "auth"
@@ -24,10 +25,14 @@ async function proxy(req: NextRequest, segments: string[]) {
 
   const headers = new Headers()
 
-  // Forward the user's JWT (or any Authorization header) to the backend for all routes.
-  // Auth routes (status, setup, login) ignore it when not needed; protected routes verify it.
-  const authHeader = req.headers.get("authorization")
-  if (authHeader) headers.set("Authorization", authHeader)
+  // Auth routes forward the user's JWT so the backend can verify it.
+  // All other routes use the static API key so the backend accepts them.
+  if (isAuthRoute) {
+    const authHeader = req.headers.get("authorization")
+    if (authHeader) headers.set("Authorization", authHeader)
+  } else {
+    headers.set("Authorization", `Bearer ${BEARER_TOKEN}`)
+  }
 
   if (!isFormData) {
     const ct = req.headers.get("content-type")
