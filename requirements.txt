@@ -1,6 +1,6 @@
 requests
 python-dotenv
-psycopg2-binary
+docker
 cloudflare
 playwright
 dnspython
@@ -10,3 +10,6 @@ PyJWT
 pyotp
 qrcode
 Werkzeug
+APScheduler
+gunicorn
+nbtlib

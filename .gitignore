@@ -62,6 +62,9 @@ db.sqlite3
 db.sqlite3-journal
 auth.db
 auth.db-*
+cscm.db
+cscm.db-*
+/data/
 
 # Flask stuff:
 instance/
@@ -207,3 +210,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.claude

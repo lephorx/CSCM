@@ -1,0 +1,712 @@
+openapi: 3.0.3
+info:
+  title: CSCM Tool API
+  description: >
+    Self-contained REST API for provisioning and managing Minecraft servers as
+    Docker containers, with PlayIT tunnel and Cloudflare DNS automation.
+  version: "2.0.0"
+servers:
+  - url: http://localhost:5000
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Servers
+  - name: Lifecycle
+  - name: Console
+  - name: Modification
+  - name: Properties
+  - name: Players
+  - name: Backups
+  - name: Files
+  - name: Networking
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        error:
+          type: string
+    Server:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        type: { type: string, enum: [paper, forge, fabric, vanilla, purpur] }
+        version: { type: string }
+        port: { type: integer }
+        status: { type: string }
+        runtime_status:
+          type: string
+          enum: [not_created, stopped, starting, healthy, unhealthy, running]
+        created_at: { type: string }
+        tunnels:
+          type: array
+          items:
+            type: object
+            properties:
+              address: { type: string }
+              local_port: { type: integer }
+              external_port: { type: integer, nullable: true }
+        dns_records:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              name: { type: string }
+              target: { type: string }
+              port: { type: integer, nullable: true }
+  parameters:
+    ServerId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    BackupId:
+      name: backup_id
+      in: path
+      required: true
+      schema: { type: integer }
+  requestBodies:
+    Username:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [username]
+            properties:
+              username: { type: string }
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /api/auth/status:
+    get:
+      tags: [Auth]
+      summary: Check setup/auth status
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /api/auth/setup:
+    post:
+      tags: [Auth]
+      summary: Create the single admin account (one-time)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        "201": { description: Created }
+        "400": { description: Validation error }
+        "409": { description: Already set up }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with username, password, and TOTP code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, otp]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                otp: { type: string }
+      responses:
+        "200": { description: OK }
+        "401": { description: Invalid credentials }
+        "403": { description: Setup required }
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the authenticated user
+      responses:
+        "200": { description: OK }
+        "401": { description: Unauthorized }
+
+  /api/server-types:
+    get:
+      tags: [Servers]
+      summary: List supported Minecraft server flavors
+      responses:
+        "200": { description: OK }
+
+  /api/servers:
+    get:
+      tags: [Servers]
+      summary: List all servers
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Server" }
+    post:
+      tags: [Servers]
+      summary: Provision a new Minecraft server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                type:
+                  {
+                    type: string,
+                    enum: [paper, forge, fabric, vanilla, purpur],
+                    default: paper,
+                  }
+                version: { type: string, default: "1.21.4" }
+                port:
+                  {
+                    type: integer,
+                    minimum: 1024,
+                    maximum: 65535,
+                    default: 25565,
+                  }
+                mem_min: { type: integer, default: 2 }
+                mem_max: { type: integer, default: 4 }
+                subscription: { type: string, enum: [premium, free] }
+                agent: { type: string }
+      responses:
+        "201": { description: Created }
+        "400": { description: Validation error }
+        "409": { description: Port conflict }
+        "500": { description: Provisioning failed }
+
+  /api/servers/{id}:
+    get:
+      tags: [Servers]
+      summary: Get server detail
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+    delete:
+      tags: [Servers]
+      summary: Deprovision a server and all its resources
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: Deleted }
+        "404": { description: Not found }
+
+  /api/servers/{id}/start:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/stop:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/restart:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/kill:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/command:
+    post:
+      tags: [Console]
+      summary: Send an RCON console command
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command: { type: string }
+      responses:
+        "200": { description: OK }
+        "400": { description: Missing command }
+        "404": { description: Not found }
+
+  /api/servers/{id}/logs:
+    get:
+      tags: [Console]
+      summary: Get recent console log lines
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: tail
+          in: query
+          schema: { type: integer, default: 200 }
+      responses:
+        "200": { description: OK }
+
+  /api/servers/{id}/console/stream:
+    get:
+      tags: [Console]
+      summary: Live console stream (Server-Sent Events)
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: JWT, since EventSource cannot set headers.
+      responses:
+        "200":
+          description: text/event-stream
+        "401": { description: Unauthorized }
+
+  /api/servers/{id}/stats:
+    get:
+      tags: [Console]
+      summary: Live resource stats and player list
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/servers/{id}/name:
+    patch:
+      tags: [Modification]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/port:
+    patch:
+      tags: [Modification]
+      summary: Change the host port (recreates the container)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [port]
+              properties:
+                { port: { type: integer, minimum: 1024, maximum: 65535 } }
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+        "409": { description: Port conflict }
+
+  /api/servers/{id}/ram:
+    patch:
+      tags: [Modification]
+      summary: Change JVM heap allocation (recreates the container)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mem_min, mem_max]
+              properties:
+                mem_min: { type: integer }
+                mem_max: { type: integer }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/properties:
+    get:
+      tags: [Properties]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+    patch:
+      tags: [Properties]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/players:
+    get:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/players/{username}/effects:
+    post:
+      tags: [Players]
+      summary: Add a live effect to a player
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [effect]
+              properties:
+                effect: { type: string, example: minecraft:speed }
+                seconds: { type: integer, default: 30 }
+                amplifier: { type: integer, default: 0 }
+                hide_particles: { type: boolean, default: true }
+      responses:
+        {
+          "200": { description: OK },
+          "400": { description: Validation error },
+          "409": { description: Server not running },
+        }
+    delete:
+      tags: [Players]
+      summary: Remove all active effects from a player
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/players/{username}/effects/{effect_id}:
+    delete:
+      tags: [Players]
+      summary: Remove one specific effect from a player
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+        - name: effect_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "400": { description: Validation error },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/whitelist:
+    post:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+    delete:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/ops:
+    post:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+    delete:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/bans:
+    get:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+    post:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username: { type: string }
+                reason: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/bans/{username}:
+    delete:
+      tags: [Players]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/kick:
+    post:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username: { type: string }
+                reason: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/backups:
+    get:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+    post:
+      tags: [Backups]
+      summary: Create a manual backup
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        {
+          "201": { description: Created },
+          "500": { description: Backup failed },
+        }
+
+  /api/servers/{id}/backups/{backup_id}:
+    delete:
+      tags: [Backups]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - { $ref: "#/components/parameters/BackupId" }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/backups/{backup_id}/restore:
+    post:
+      tags: [Backups]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - { $ref: "#/components/parameters/BackupId" }
+      responses:
+        { "200": { description: OK }, "500": { description: Restore failed } }
+
+  /api/servers/{id}/backups/schedule:
+    get:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+    put:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cron]
+              properties:
+                cron: { type: string, example: "0 4 * * *" }
+                retention: { type: integer, default: 5 }
+                enabled: { type: boolean, default: true }
+      responses:
+        { "200": { description: OK }, "400": { description: Invalid cron } }
+    delete:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+
+  /api/servers/{id}/files:
+    get:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          schema: { type: string }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/files/download:
+    get:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File contents
+        "404": { description: Not found }
+
+  /api/servers/{id}/files/upload:
+    post:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          schema: { type: string }
+        - name: filename
+          in: query
+          schema: { type: string }
+          description: Optional target filename inside the destination directory.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        {
+          "201": { description: Uploaded },
+          "400": { description: Invalid request },
+        }
+
+  /api/servers/{id}/files/delete:
+    delete:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/tunnel:
+    post:
+      tags: [Networking]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                region: { type: string }
+                subscription: { type: string, enum: [premium, free] }
+                agent: { type: string }
+      responses:
+        { "201": { description: Created }, "404": { description: Not found } }
+
+  /api/servers/{id}/subdomain:
+    patch:
+      tags: [Networking]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subdomain]
+              properties: { subdomain: { type: string } }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }

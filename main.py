@@ -21,7 +21,7 @@ log = get_logger("cli")
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Provision a Minecraft server via Crafty, PlayIT, and Cloudflare."
+        description="Provision a Minecraft server (Docker), PlayIT tunnel, and Cloudflare DNS."
     )
     parser.add_argument("--name",    default="Minecraft test server",   help="Server display name")
     parser.add_argument("--type",    default="paper", choices=list(SERVER_TYPES.keys()), help="Server flavour")

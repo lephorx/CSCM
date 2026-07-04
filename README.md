@@ -1,341 +1,284 @@
-# CSCM API Documentation
+# CSCM Tool — API Documentation
 
-**CSCM (Crafty Server Creation Manager)** is a REST API that provisions and manages Minecraft game servers end-to-end: it creates servers in Crafty Controller, sets up PlayIT tunnels for external access, and configures Cloudflare DNS records automatically.
-
----
+CSCM (Craft Server & Container Manager) is a self-contained REST API for provisioning and
+managing Minecraft servers. It has no external dependency on Crafty Controller or any
+managed database — every server it creates runs as its own Docker container on the host
+running CSCM, and all application state lives in a local SQLite database.
 
 ## Table of Contents
 
-- [Base URL](#base-url)
-- [Authentication](#authentication)
-- [Error Format](#error-format)
-- [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Native (no Docker)](#native-no-docker)
-  - [Docker](#docker)
-  - [Environment Variables](#environment-variables)
-- [Endpoints](#endpoints)
-  - [Health](#health)
-  - [Server Types](#server-types)
-  - [Servers — CRUD](#servers--crud)
-  - [Server Control](#server-control)
-  - [Server Modification](#server-modification)
-  - [Server Networking](#server-networking)
-  - [File Management](#file-management)
-- [Schemas](#schemas)
-- [Frontend Integration Guide](#frontend-integration-guide)
+1. [Architecture](#architecture)
+2. [Features](#features)
+3. [Requirements](#requirements)
+4. [Quick Start](#quick-start)
+5. [Configuration](#configuration)
+6. [Database](#database)
+7. [Authentication](#authentication)
+8. [Error Format](#error-format)
+9. [API Reference](#api-reference)
+   - [Auth](#auth-endpoints)
+   - [Server Types](#server-types)
+   - [Servers — CRUD](#servers--crud)
+   - [Server Lifecycle](#server-lifecycle)
+   - [Console & Stats](#console--stats)
+   - [Server Modification](#server-modification)
+   - [server.properties](#serverproperties)
+   - [Players](#players)
+   - [Backups](#backups)
+   - [Files](#files)
+   - [Networking](#networking)
+10. [CLI Scripts](#cli-scripts)
+11. [OpenAPI Spec](#openapi-spec)
+12. [Security Notes](#security-notes)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Base URL
+## Architecture
 
 ```
-http://<host>:5000
+                     ┌──────────────────────┐
+   HTTP clients ───▶ │   CSCM Flask API      │
+                     │  (JWT + TOTP auth)    │
+                     └──────────┬───────────┘
+                                │  Docker Engine API (via /var/run/docker.sock)
+                                ▼
+                     ┌──────────────────────┐
+                     │   Minecraft server    │   one container per server,
+                     │   containers          │   itzg/minecraft-server image
+                     │   (cscm-mc-<id>)       │
+                     └──────────────────────┘
+                                │
+              ┌─────────────────┴─────────────────┐
+              ▼                                     ▼
+     PlayIT.gg tunnel                     Cloudflare DNS (CNAME + SRV)
+     (Playwright automation)              (public connect address)
 ```
 
-All API endpoints are prefixed with `/api`.
+CSCM itself runs in one container (or directly on a host with Docker installed). It talks
+to the Docker daemon to create, start, stop, and inspect **one container per Minecraft
+server**, using the [`itzg/minecraft-server`](https://github.com/itzg/docker-minecraft-server)
+image, which handles jar download/installation, EULA acceptance, and memory limits for
+every supported server flavor. Console commands run via `rcon-cli` inside each container;
+there is no exposed RCON port.
 
----
+All application data — servers, tunnels, DNS records, backups, backup schedules, users —
+lives in a single local SQLite file. There is no external database to provision or manage.
+
+## Features
+
+- **Self-provisioning**: create a fully configured Minecraft server (any of 5 flavors) with
+  one API call — no manual jar downloads, no external panel.
+- **Full lifecycle control**: start/stop/restart/kill, live console commands via RCON,
+  log tailing, and a live console stream over Server-Sent Events (SSE).
+- **Resource management**: change name, port, or RAM allocation (recreates the container;
+  world data is preserved on a bind-mounted volume).
+- **server.properties editor**: read and patch arbitrary properties with a
+  restart-required flag.
+- **Player management**: whitelist, ops, bans, and kicks — backed by RCON when the server
+  is running, readable from disk when it's stopped.
+- **Backups**: on-demand and cron-scheduled zip backups with retention pruning, plus
+  one-call restore.
+- **Networking**: PlayIT.gg tunnel automation and Cloudflare DNS (CNAME + SRV) so players
+  connect via a friendly subdomain instead of an IP:port.
+- **File management**: browse, upload, download, and delete files inside a server's data
+  directory directly through the API.
+- **Local auth**: single-admin JWT + TOTP (2FA) authentication, no external identity
+  provider required.
+
+## Requirements
+
+- **Docker Engine** on the host (CSCM talks to it via the Docker socket).
+- **Python 3.12+** (only if running outside Docker).
+- A **PlayIT.gg** account (for tunnels) and a **Cloudflare** zone (for DNS) — both optional
+  if you only need local/LAN access and handle networking yourself, but the tunnel/DNS
+  endpoints require them.
+- No external database — SQLite ships with Python.
+
+## Quick Start
+
+```bash
+git clone <this-repo>
+cd CSCM-Tool
+cp .env.example .env
+# Edit .env: set PLAYIT_*, CLOUDFLARE_*, SERVERS_DIR_HOST, BACKUPS_DIR_HOST, DATA_DIR_HOST
+
+docker compose up --build
+```
+
+Then:
+
+```bash
+# 1. First-run setup (creates the single admin account + TOTP secret)
+curl -X POST http://localhost:5000/api/auth/setup \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "a-very-long-password"}'
+# Scan the returned qr_code_data_uri with an authenticator app, or use totp_secret directly.
+
+# 2. Log in
+curl -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "a-very-long-password", "otp": "123456"}'
+# -> { "token": "...", ... }
+
+# 3. Create a server
+curl -X POST http://localhost:5000/api/servers \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"name": "Survival SMP", "type": "paper", "version": "1.21.4", "port": 25565}'
+```
+
+Running without Docker Compose (e.g. directly on a host with Docker installed)? Set
+`SERVERS_DIR`/`SERVERS_DIR_HOST` and `BACKUPS_DIR`/`BACKUPS_DIR_HOST` to the **same** paths,
+then `pip install -r requirements.txt && python app.py`.
+
+## Configuration
+
+All configuration is via environment variables (see `.env.example`).
+
+| Variable                                                               | Default                               | Description                                                                                                                                                                                   |
+| ---------------------------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DB_PATH`                                                              | `cscm.db`                             | Path to the SQLite database file (app data).                                                                                                                                                  |
+| `AUTH_DB_PATH`                                                         | `cscm.db`                             | Path to the SQLite database file (auth data). Point at the same file as `DB_PATH`.                                                                                                            |
+| `MC_IMAGE`                                                             | `itzg/minecraft-server:java21`        | Docker image used for every Minecraft server container.                                                                                                                                       |
+| `SERVERS_DIR`                                                          | `/data/servers`                       | Path to server data directories **as seen by the CSCM process**. Must be an absolute path — Docker rejects relative paths for bind mounts.                                                    |
+| `SERVERS_DIR_HOST`                                                     | `/opt/cscm/servers`                   | Path to the **same** directory **as seen by the Docker daemon** — used for bind-mounting into Minecraft containers. Only differs from `SERVERS_DIR` when CSCM itself runs inside a container. |
+| `BACKUPS_DIR` / `BACKUPS_DIR_HOST`                                     | `/data/backups` / `/opt/cscm/backups` | Same host/container-path split, for backup archives.                                                                                                                                          |
+| `PLAYIT_EMAIL`, `PLAYIT_PASSWORD`                                      | —                                     | PlayIT.gg account credentials (Playwright login).                                                                                                                                             |
+| `PLAYIT_HEADLESS`                                                      | `false`                               | Run the Playwright browser headless.                                                                                                                                                          |
+| `PLAYIT_SUBSCRIPTION`                                                  | `premium`                             | `premium` or `free`.                                                                                                                                                                          |
+| `PLAYIT_REGION`                                                        | `Germany`                             | Tunnel region (premium only).                                                                                                                                                                 |
+| `PLAYIT_AGENT`                                                         | —                                     | Specific PlayIT agent name; first available if unset.                                                                                                                                         |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_BASE_DOMAIN` | —                                     | Cloudflare DNS credentials/zone.                                                                                                                                                              |
+| `FLASK_HOST` / `FLASK_PORT`                                            | `0.0.0.0` / `5000`                    | Bind address for the API.                                                                                                                                                                     |
+| `FLASK_DEBUG`                                                          | `false`                               | Flask debug mode (dev only).                                                                                                                                                                  |
+| `JWT_LIFETIME_HOURS`                                                   | `8`                                   | Login session length.                                                                                                                                                                         |
+| `TOTP_ISSUER`                                                          | `CSCM Tool`                           | Issuer name shown in authenticator apps.                                                                                                                                                      |
+| `LOG_LEVEL`                                                            | `INFO`                                | `DEBUG`\|`INFO`\|`WARNING`\|`ERROR`.                                                                                                                                                          |
+
+> **Important — the `SERVERS_DIR` / `SERVERS_DIR_HOST` split.** CSCM runs in its own
+> container and talks to the Docker daemon over a mounted socket. When it asks the daemon
+> to bind-mount a server's data directory into a new Minecraft container, that path is
+> resolved **on the host**, not inside CSCM's own container. `SERVERS_DIR_HOST` (and
+> `BACKUPS_DIR_HOST`) must point at the same physical directory as `SERVERS_DIR` — just
+> expressed as the host sees it. Getting this wrong is the most common setup mistake; the
+> app validates writability of `SERVERS_DIR`/`BACKUPS_DIR` at startup and fails fast, but it
+> cannot detect a host-path mismatch — verify with `docker exec cscm_api ls /data/servers`
+> vs. `ls $SERVERS_DIR_HOST` after creating a server.
+
+## Database
+
+CSCM uses a single local SQLite file (`schema.sql`) for both application data and
+authentication data. Initialize it with:
+
+```bash
+python scripts/init_db.py
+```
+
+This creates `servers`, `playit_tunnels`, `dns_records`, `backups`, `backup_schedules`
+(app data) and `users`, `app_config` (auth data, created by `auth_manager`). `app.py` also
+calls this automatically on startup, so a manual run is only needed for local development
+outside Docker.
 
 ## Authentication
 
-The application now uses a local authentication database, JWT bearer tokens, and TOTP multi-factor authentication.
+CSCM uses **local, single-admin authentication**: username + password + TOTP (2FA), issuing
+short-lived JWTs. There is no user management beyond the first account — `POST
+/api/auth/setup` can only be called once.
 
-### First run
+1. `POST /api/auth/setup` — create the one admin account. Returns a TOTP secret, URI, and
+   QR code (as an SVG data URI) to scan into an authenticator app (Google Authenticator,
+   Authy, 1Password, etc.).
+2. `POST /api/auth/login` — exchange username + password + current TOTP code for a JWT.
+3. Include the JWT on every subsequent request: `Authorization: Bearer <token>`.
+4. Tokens expire after `JWT_LIFETIME_HOURS` (default 8) — log in again to get a new one.
 
-Open `/` in a browser. If no local user exists yet, CSCM shows a setup page that requires you to create the first administrator username and password. After setup, the page returns:
-
-- A QR code for authenticator apps such as 1Password, Authy, Google Authenticator, or Microsoft Authenticator
-- A manual TOTP secret you can enter if QR scanning is unavailable
-
-### Sign in
-
-After the first user is created, sign in with:
-
-- Username
-- Password
-- Current 6-digit TOTP code
-
-Successful login returns a JWT. Use it for all protected API endpoints:
-
-```
-Authorization: Bearer <jwt_token>
-```
-
-If no user exists yet, protected endpoints return:
-
-```json
-HTTP 403
-{
-  "error": "Setup required",
-  "setup_required": true
-}
-```
-
-If the token is missing or invalid, protected endpoints return:
-
-```json
-HTTP 401
-{
-  "error": "Unauthorized"
-}
-```
-
----
+If `GET /api/auth/status` reports `setup_required: true`, no account exists yet and every
+protected endpoint will return `403`.
 
 ## Error Format
 
-All errors return JSON with a consistent shape:
+Most endpoints return a JSON body with at least:
+
+```json
+{ "success": false, "message": "Human-readable description of what went wrong" }
+```
+
+A handful of validation errors (mostly on request body/query parsing) use `"error"`
+instead of `"message"` — check for either key defensively. Common status codes:
+
+| Status | Meaning                                                                   |
+| ------ | ------------------------------------------------------------------------- |
+| `400`  | Malformed or invalid request body/parameters.                             |
+| `401`  | Missing or invalid JWT.                                                   |
+| `403`  | Initial setup not completed yet.                                          |
+| `404`  | Server, backup, or file not found.                                        |
+| `409`  | Conflict — e.g. port already in use, or action requires a running server. |
+| `500`  | Unexpected server-side error (Docker/PlayIT/Cloudflare failure, etc.).    |
+
+---
+
+## API Reference
+
+All endpoints below (except `/health` and `/api/auth/*`) require `Authorization: Bearer
+<token>`.
+
+### Auth Endpoints
+
+#### `GET /api/auth/status`
+
+No auth required. Returns whether setup is needed and whether the caller is authenticated.
 
 ```json
 {
-  "success": false,
-  "message": "Human-readable error description"
+  "setup_required": false,
+  "authenticated": true,
+  "user": { "id": 1, "username": "admin" }
 }
 ```
 
-Or for validation errors:
+#### `POST /api/auth/setup`
+
+No auth required (fails with `409` if already set up). Body:
+
+```json
+{ "username": "admin", "password": "at-least-12-characters" }
+```
+
+Response `201`:
 
 ```json
 {
-  "error": "'name' is required"
+  "success": true,
+  "message": "Initial account created. Scan the QR code and then sign in with your one-time password.",
+  "totp_secret": "BASE32SECRET",
+  "totp_uri": "otpauth://totp/CSCM%20Tool:admin?secret=...",
+  "qr_code_data_uri": "data:image/svg+xml;base64,..."
 }
 ```
 
----
+#### `POST /api/auth/login`
 
-## Installation
-
-### Prerequisites
-
-| Requirement             | Version              |
-| ----------------------- | -------------------- |
-| Python                  | 3.12+                |
-| PostgreSQL (Neon)       | Any                  |
-| Crafty Controller       | 4.x (native install) |
-| PlayIT account          | playit.gg            |
-| Cloudflare account      | With a managed zone  |
-| Docker + Docker Compose | Optional             |
-
----
-
-### Native (no Docker)
-
-**Step 1: Clone the repository**
-
-```bash
-git clone https://github.com/your-org/CSCM-Tool.git
-cd CSCM-Tool
-```
-
-**Step 2: Create and activate a virtual environment**
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-**Step 3: Install Python dependencies**
-
-```bash
-pip install -r requirements.txt
-```
-
-**Step 4: Install Playwright browser (required for PlayIT automation)**
-
-```bash
-playwright install chromium --with-deps
-```
-
-> If this fails on Linux, you may need system dependencies. See [Playwright docs](https://playwright.dev/python/docs/intro).
-
-**Step 5: Configure environment variables**
-
-```bash
-cp .env.example .env
-# Edit .env with your Crafty, Neon, PlayIT, and Cloudflare credentials
-nano .env
-```
-
-Key things to check:
-
-- `BASE_URL`: Set to `https://localhost:8443` (or your Crafty Controller address)
-- `CRAFTY_SERVERS_DIR`: Must match your Crafty installation directory
-- `PLAYIT_EMAIL` / `PLAYIT_PASSWORD`: Your PlayIT account credentials
-- `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_BASE_DOMAIN`: Cloudflare setup
-
-**Step 6: Test the database connection**
-
-```bash
-python3 -c "from server_manager import _get_db; conn = _get_db(); print('Database connected'); conn.close()"
-```
-
-If this fails, check your `DB_*` environment variables in `.env`.
-
-**Step 7: Start the API**
-
-```bash
-python app.py
-```
-
-The server will start on `http://0.0.0.0:5000` by default. Test it:
-
-```bash
-curl http://localhost:5000/health
-```
-
-You should see:
+No auth required. Body:
 
 ```json
-{ "status": "ok", "message": "CSCM API is healthy" }
+{ "username": "admin", "password": "...", "otp": "123456" }
 ```
 
----
-
-### Docker
-
-**Step 1: Clone the repository**
-
-```bash
-git clone https://github.com/your-org/CSCM-Tool.git
-cd CSCM-Tool
-```
-
-**Step 2: Configure environment variables**
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-**Important for Docker:** If Crafty Controller is running on the host machine, set:
-
-```env
-BASE_URL=https://host.docker.internal:8443
-```
-
-This allows the container to reach the host's localhost.
-
-**Step 3: Build and start**
-
-```bash
-# Build and start in background
-docker compose up -d --build
-
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
-```
-
-**Step 4: Test the API**
-
-```bash
-curl http://localhost:5000/health
-```
-
-**Troubleshooting Docker:**
-
-- **"Cannot reach Crafty"**: Make sure `BASE_URL=https://host.docker.internal:8443` in `.env`
-- **"Permission denied" on file uploads**: The Crafty servers directory is mounted read-only (`:ro`). To enable uploads, edit `docker-compose.yml` and change `:ro` to `:rw`:
-
-  ```yaml
-  volumes:
-    - /var/opt/minecraft/crafty/crafty-4/servers:/crafty/servers:rw
-  ```
-
-- **"Playwright not found"**: The Docker image pre-installs Playwright. If you see this, rebuild: `docker compose up --build`
-
----
-
-### Environment Variables
-
-Create a `.env` file in the project root with the following variables. Copy from `.env.example` for a template:
-
-```bash
-cp .env.example .env
-# Then edit with your values
-```
-
-**CSCM API Configuration:**
-
-```env
-FLASK_HOST=0.0.0.0                        # Bind address (0.0.0.0 for all interfaces)
-FLASK_PORT=5000                           # Listen port
-FLASK_DEBUG=false                         # Enable debug mode (true/false)
-AUTH_DB_PATH=auth.db                      # Local SQLite database for usernames, hashes, and TOTP secrets
-JWT_LIFETIME_HOURS=8                      # JWT expiry window
-TOTP_ISSUER=CSCM Tool                     # Label shown in authenticator apps
-LOG_LEVEL=INFO                            # DEBUG | INFO | WARNING | ERROR
-```
-
-**Crafty Controller Configuration:**
-
-```env
-BASE_URL=https://localhost:8443           # Crafty API base URL
-                                          # For Docker, use: https://host.docker.internal:8443
-CRAFTY_USER=admin                         # Crafty admin username
-CRAFTY_PASS=your_password                 # Crafty admin password
-CRAFTY_SERVERS_DIR=/var/opt/minecraft/crafty/crafty-4/servers
-                                          # Path to Crafty servers directory on host
-```
-
-**PostgreSQL / Neon Database:**
-
-```env
-DB_NAME=your_database_name
-DB_USER=your_db_username
-DB_PASSWORD=your_db_password
-DB_HOST=your_host.neon.tech              # For Neon: xxx.neon.tech
-DB_PORT=5432
-```
-
-**PlayIT Configuration:**
-
-```env
-PLAYIT_EMAIL=your_email@example.com
-PLAYIT_PASSWORD=your_playit_password
-PLAYIT_HEADLESS=true                     # Set to false to watch browser during automation
-PLAYIT_SUBSCRIPTION=premium               # premium | free
-PLAYIT_REGION=Germany                    # Region for tunnel (premium only)
-                                         # Options: Seattle, Los Angeles, Denver, Dallas,
-                                         # Chicago, New York, Miami, Germany, United Kingdom,
-                                         # Sweden, Poland, Spain, Singapore, Japan,
-                                         # Australia, Sao Paulo, Chile, India
-PLAYIT_AGENT=                            # Optional: agent name (leave empty for first available)
-```
-
-**Cloudflare Configuration:**
-
-```env
-CLOUDFLARE_API_TOKEN=your_cf_api_token
-CLOUDFLARE_ZONE_ID=your_zone_id
-CLOUDFLARE_BASE_DOMAIN=example.com       # Root domain (e.g., homeops.services)
-```
-
----
-
-## Endpoints
-
----
-
-### Health
-
-#### `GET /`
-
-#### `GET /health`
-
-Simple health check. No authentication required.
-
-**Response `200`:**
+Response `200`:
 
 ```json
 {
-  "status": "ok",
-  "message": "CSCM API is running"
+  "success": true,
+  "token": "eyJ...",
+  "token_type": "Bearer",
+  "expires_at": 1735689600,
+  "user": { "id": 1, "username": "admin" }
 }
 ```
+
+#### `GET /api/auth/me`
+
+Returns the authenticated user for the supplied token.
 
 ---
 
@@ -343,14 +286,8 @@ Simple health check. No authentication required.
 
 #### `GET /api/server-types`
 
-Returns all supported Minecraft server flavours.
-
-**Response `200`:**
-
 ```json
-{
-  "server_types": ["paper", "forge", "fabric", "vanilla", "purpur"]
-}
+{ "server_types": ["paper", "forge", "fabric", "vanilla", "purpur"] }
 ```
 
 ---
@@ -359,40 +296,34 @@ Returns all supported Minecraft server flavours.
 
 #### `GET /api/servers`
 
-Returns all servers provisioned through CSCM, including their PlayIT tunnels and Cloudflare DNS records.
-
-**Response `200`:**
+Lists every server with its tunnels, DNS records, and live `runtime_status`.
 
 ```json
 {
   "servers": [
     {
-      "id": 44,
-      "name": "Paper Server",
+      "id": 1,
+      "name": "Survival SMP",
+      "slug": "survival-smp",
       "type": "paper",
-      "version": "1.18.2",
-      "port": 25581,
-      "crafty_id": "80734f9e-5d32-4b9c-a8a6-061887231cc6",
-      "created_at": "2026-04-21T08:55:23.123456",
+      "version": "1.21.4",
+      "port": 25565,
+      "status": "created",
+      "runtime_status": "healthy",
+      "created_at": "2026-07-01 12:00:00",
       "tunnels": [
         {
-          "address": "single-washstand.deu.mcjoin.link",
-          "local_port": 25581,
-          "external_port": 5474
+          "address": "abc123.mcjoin.link",
+          "local_port": 25565,
+          "external_port": 34567
         }
       ],
       "dns_records": [
         {
           "type": "CNAME",
-          "name": "paper-server.homeops.services",
-          "target": "single-washstand.deu.mcjoin.link",
+          "name": "survival-smp.example.com",
+          "target": "abc123.mcjoin.link",
           "port": null
-        },
-        {
-          "type": "SRV",
-          "name": "_minecraft._tcp.paper-server.homeops.services",
-          "target": "single-washstand.deu.mcjoin.link",
-          "port": 5474
         }
       ]
     }
@@ -400,231 +331,135 @@ Returns all servers provisioned through CSCM, including their PlayIT tunnels and
 }
 ```
 
----
+`runtime_status` is one of: `not_created`, `stopped`, `starting`, `healthy`, `unhealthy`,
+`running` (running but the image reports no health check yet).
 
-#### `POST /api/servers`
+#### `GET /api/servers/<id>`
 
-Provisions a complete Minecraft server stack:
+Full detail for one server, including `runtime_status`, `port`, `mem_min`, and `mem_max`
+(excludes the RCON password).
 
-1. Creates the server in Crafty Controller
-2. Starts the server and accepts the EULA
-3. Creates a PlayIT tunnel
-4. Creates Cloudflare CNAME + SRV DNS records
-
-> ⚠️ This operation takes **30–90 seconds** depending on jar download speed. For Forge servers, the first start runs the installer — it will take several minutes.
-
-**Request body (JSON):**
-
-| Field     | Type    | Required | Default  | Description                                                  |
-| --------- | ------- | -------- | -------- | ------------------------------------------------------------ |
-| `name`    | string  | ✅       | —        | Display name for the server                                  |
-| `type`    | string  | ❌       | `paper`  | Server type: `paper`, `forge`, `fabric`, `vanilla`, `purpur` |
-| `version` | string  | ❌       | `1.21.4` | Minecraft version string                                     |
-| `port`    | integer | ❌       | `25565`  | Local TCP port (1024–65535)                                  |
-| `mem_min` | integer | ❌       | `2`      | Minimum JVM heap in GB                                       |
-| `mem_max` | integer | ❌       | `4`      | Maximum JVM heap in GB                                       |
-
-**Example request:**
+Example response:
 
 ```json
 {
-  "name": "Paper Server",
-  "type": "paper",
-  "version": "1.18.2",
-  "port": 25565,
-  "mem_min": 2,
-  "mem_max": 4
+  "success": true,
+  "server": {
+    "id": 3,
+    "name": "servertestdev123",
+    "slug": "servertestdev123",
+    "type": "vanilla",
+    "version": "1.21.4",
+    "port": 25567,
+    "mem_min": 4,
+    "mem_max": 16,
+    "status": "created",
+    "runtime_status": "healthy",
+    "created_at": "2026-07-04 00:36:32"
+  }
 }
 ```
 
-**Response `201`:**
+#### `POST /api/servers`
+
+Provisions a full stack: SQLite record → Docker container → PlayIT tunnel → Cloudflare
+CNAME + SRV. This is synchronous but fast — `docker run` returns in seconds; jar
+download/world generation happen inside the container afterward. Poll
+`GET /api/servers/<id>` and watch `runtime_status` go `starting` → `healthy`.
+
+Request body:
+
+| Field          | Type   | Required | Default     | Notes                                                   |
+| -------------- | ------ | -------- | ----------- | ------------------------------------------------------- |
+| `name`         | string | yes      | —           | Display name; slugified for the subdomain and DNS name. |
+| `type`         | string | no       | `paper`     | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`. |
+| `version`      | string | no       | `1.21.4`    | Minecraft version string.                               |
+| `port`         | int    | no       | `25565`     | Host port (1024–65535), must be unique across servers.  |
+| `mem_min`      | int    | no       | `2`         | Minimum JVM heap, GB.                                   |
+| `mem_max`      | int    | no       | `4`         | Maximum JVM heap, GB.                                   |
+| `subscription` | string | no       | env default | `premium` or `free` (PlayIT).                           |
+| `agent`        | string | no       | env default | PlayIT agent name.                                      |
+
+Response `201`:
 
 ```json
 {
   "success": true,
   "message": "Server provisioned successfully",
-  "server_id": 44,
-  "crafty_id": "80734f9e-5d32-4b9c-a8a6-061887231cc6",
-  "connect_address": "paper-server.homeops.services",
-  "tunnel_address": "single-washstand.deu.mcjoin.link",
-  "external_port": 5474
+  "server_id": 1,
+  "connect_address": "survival-smp.example.com",
+  "tunnel_address": "abc123.mcjoin.link",
+  "external_port": 34567
 }
 ```
-
-**Response `400` — Validation error:**
-
-```json
-{
-  "error": "'port' must be an integer between 1024 and 65535"
-}
-```
-
-**Response `500` — Provisioning error:**
-
-```json
-{
-  "success": false,
-  "message": "Crafty server creation failed: ..."
-}
-```
-
----
 
 #### `DELETE /api/servers/<id>`
 
-Deprovisions a server and **all associated resources**:
+Stops and removes the container, deletes the data directory and all backups, tears down
+the PlayIT tunnel and Cloudflare records, and deletes the database row.
 
-- Deletes the Crafty server
-- Deletes the PlayIT tunnel (browser automation)
-- Deletes all Cloudflare DNS records
-- Removes the database row
+---
 
-**URL parameter:** `id` — The database `server_id` (integer) from `GET /api/servers`.
+### Server Lifecycle
 
-**Response `200`:**
+| Method | Path                        | Notes                                                              |
+| ------ | --------------------------- | ------------------------------------------------------------------ |
+| `POST` | `/api/servers/<id>/start`   | Starts the container.                                              |
+| `POST` | `/api/servers/<id>/stop`    | Sends RCON `stop`, then `docker stop` as a fallback (60s timeout). |
+| `POST` | `/api/servers/<id>/restart` | `docker restart` (60s timeout).                                    |
+| `POST` | `/api/servers/<id>/kill`    | `docker kill` — immediate, ungraceful.                             |
+
+All return `{"success": true/false, "message": "..."}`.
+
+---
+
+### Console & Stats
+
+#### `POST /api/servers/<id>/command`
+
+Body: `{"command": "say Hello, world!"}`. Runs the command via `rcon-cli` inside the
+container and returns its output.
+
+```json
+{ "success": true, "message": "Command sent", "output": "" }
+```
+
+#### `GET /api/servers/<id>/logs?tail=200`
+
+Returns the last `tail` lines (default 200) of container log output.
 
 ```json
 {
   "success": true,
-  "message": "Server 'Paper Server' deleted successfully"
+  "data": ["[12:00:00] [Server thread/INFO]: Done (1.234s)!", "..."]
 }
 ```
 
-**Response `404`:**
+#### `GET /api/servers/<id>/console/stream?token=<jwt>`
 
-```json
-{
-  "success": false,
-  "message": "No server found with ID 44"
-}
+Server-Sent Events stream of live console output (`docker logs --follow`). Because
+`EventSource` cannot set request headers, the JWT is passed as a **query parameter**
+instead of an `Authorization` header — use a short-lived token and HTTPS in production.
+
+```js
+const es = new EventSource(`/api/servers/1/console/stream?token=${token}`);
+es.addEventListener("log", (e) => console.log(e.data));
 ```
-
----
-
-### Server Control
-
-All control endpoints use the database `server_id` (integer), not the Crafty UUID.
-
-#### `POST /api/servers/<id>/start`
-
-Starts the server.
-
-**Response `200`:**
-
-```json
-{ "success": true, "message": "Start command sent" }
-```
-
----
-
-#### `POST /api/servers/<id>/stop`
-
-Gracefully stops the server (sends the `stop` command).
-
-**Response `200`:**
-
-```json
-{ "success": true, "message": "Stop command sent" }
-```
-
----
-
-#### `POST /api/servers/<id>/restart`
-
-Restarts the server.
-
-**Response `200`:**
-
-```json
-{ "success": true, "message": "Restart command sent" }
-```
-
----
-
-#### `POST /api/servers/<id>/kill`
-
-Force-kills the server process immediately (no graceful shutdown).
-
-**Response `200`:**
-
-```json
-{ "success": true, "message": "Kill command sent" }
-```
-
----
-
-#### `POST /api/servers/<id>/command`
-
-Sends a console command to a running server's stdin.
-
-**Request body (JSON):**
-
-| Field     | Type   | Required | Description                           |
-| --------- | ------ | -------- | ------------------------------------- |
-| `command` | string | ✅       | The Minecraft console command to send |
-
-**Example request:**
-
-```json
-{ "command": "say Hello from the API!" }
-```
-
-**Example requests:**
-
-```json
-{ "command": "op PlayerName" }
-{ "command": "whitelist add PlayerName" }
-{ "command": "time set day" }
-{ "command": "stop" }
-```
-
-**Response `200`:**
-
-```json
-{ "success": true, "message": "Command sent" }
-```
-
----
 
 #### `GET /api/servers/<id>/stats`
-
-Returns live stats for the server fetched from Crafty.
-
-**Response `200`:**
 
 ```json
 {
   "success": true,
   "data": {
     "running": true,
-    "online": 3,
-    "max": 20,
-    "players": ["Player1", "Player2", "Player3"],
-    "cpu": 12.4,
-    "mem": 1024.0,
-    "desc": "A Minecraft Server",
-    "version": "1.18.2"
+    "status": "running",
+    "health": "healthy",
+    "cpu_percent": 12.4,
+    "memory_usage_bytes": 2147483648,
+    "memory_limit_bytes": 4294967296,
+    "players_raw": "There are 2 of a max of 20 players online: Steve, Alex"
   }
-}
-```
-
-> The exact fields returned depend on the Crafty version. Check Crafty's API docs for the full schema.
-
----
-
-#### `GET /api/servers/<id>/logs`
-
-Returns the server's console log output.
-
-**Response `200`:**
-
-```json
-{
-  "success": true,
-  "data": [
-    "[08:55:23] [Server thread/INFO]: Starting minecraft server version 1.18.2",
-    "[08:55:25] [Server thread/INFO]: Done (2.341s)! For help, type \"help\""
-  ]
 }
 ```
 
@@ -632,509 +467,422 @@ Returns the server's console log output.
 
 ### Server Modification
 
-These endpoints modify server configuration. Use the database `server_id` (integer).
-
 #### `PATCH /api/servers/<id>/name`
 
-Renames a server in both Crafty Controller and the database.
-
-**Request body (JSON):**
-
-| Field  | Type   | Required | Description     |
-| ------ | ------ | -------- | --------------- |
-| `name` | string | ✅       | New server name |
-
-**Example request:**
-
-```json
-{ "name": "My New Server Name" }
-```
-
-**Response `200`:**
-
-```json
-{
-  "success": true,
-  "message": "Server renamed to 'My New Server Name'"
-}
-```
-
-**Response `404`:**
-
-```json
-{ "success": false, "message": "Server not found" }
-```
-
----
+Body: `{"name": "New Name"}`. Database-only rename (does not affect the container or DNS).
 
 #### `PATCH /api/servers/<id>/port`
 
-Changes the server's listening port in Crafty and the database.
-
-**Request body (JSON):**
-
-| Field  | Type    | Required | Description           |
-| ------ | ------- | -------- | --------------------- |
-| `port` | integer | ✅       | New port (1024–65535) |
-
-**Example request:**
-
-```json
-{ "port": 25566 }
-```
-
-**Response `200`:**
-
-```json
-{
-  "success": true,
-  "message": "Port updated to 25566"
-}
-```
-
-**Response `400` — Invalid port:**
-
-```json
-{
-  "success": false,
-  "message": "'port' must be an integer between 1024 and 65535"
-}
-```
-
----
+Body: `{"port": 25566}`. Updates the DB then **recreates the container** (stop → remove →
+run) with the new port mapping; world data persists on the bind-mounted volume. Returns a
+warning that any existing PlayIT tunnel still points at the old port — call
+`POST /api/servers/<id>/tunnel` again if you need the public address updated.
 
 #### `PATCH /api/servers/<id>/ram`
 
-Modifies the JVM heap allocation (minimum and maximum memory).
+Body: `{"mem_min": 2, "mem_max": 4}` (GB). Updates the DB then recreates the container with
+new `INIT_MEMORY`/`MAX_MEMORY` values.
 
-**Request body (JSON):**
+---
 
-| Field     | Type    | Required | Description            |
-| --------- | ------- | -------- | ---------------------- |
-| `mem_min` | integer | ✅       | Minimum JVM heap in GB |
-| `mem_max` | integer | ✅       | Maximum JVM heap in GB |
+### server.properties
 
-**Example request:**
-
-```json
-{ "mem_min": 4, "mem_max": 8 }
-```
-
-**Response `200`:**
+#### `GET /api/servers/<id>/properties`
 
 ```json
 {
   "success": true,
-  "message": "RAM updated: 4GB min, 8GB max",
-  "execution_command": "java -Xms4000M -Xmx8000M ..."
+  "properties": {
+    "motd": "A Minecraft Server",
+    "difficulty": "easy",
+    "max-players": "20"
+  }
 }
 ```
 
-**Response `400` — Invalid configuration:**
+#### `PATCH /api/servers/<id>/properties`
 
-```json
-{
-  "success": false,
-  "message": "No -Xms/-Xmx flags found in execution command. For Forge servers, edit user_jvm_args.txt directly.",
-  "execution_command": "..."
-}
-```
-
----
-
-### Server Networking
-
-#### `POST /api/servers/<id>/tunnel`
-
-Creates (or recreates) a PlayIT tunnel and Cloudflare DNS records for a server. This enables external players to connect to your server.
-
-**Request body (JSON, optional):**
-
-| Field          | Type   | Required | Default                       | Description                                |
-| -------------- | ------ | -------- | ----------------------------- | ------------------------------------------ |
-| `region`       | string | ❌       | `PLAYIT_REGION` env var       | Tunnel region (premium subscriptions only) |
-| `subscription` | string | ❌       | `PLAYIT_SUBSCRIPTION` env var | `premium` or `free`                        |
-| `agent`        | string | ❌       | First available agent         | PlayIT agent name                          |
-
-**Example request (minimal):**
-
-```json
-{}
-```
-
-**Example request (premium with region):**
-
-```json
-{
-  "region": "Germany",
-  "subscription": "premium",
-  "agent": "EU-Central"
-}
-```
-
-**Response `201`:**
+Body: `{"properties": {"motd": "Welcome!", "difficulty": "hard"}}`.
 
 ```json
 {
   "success": true,
-  "connect_address": "paper-server.homeops.services",
-  "tunnel_address": "single-washstand.deu.mcjoin.link",
-  "external_port": 5474
+  "changed": ["motd", "difficulty"],
+  "rejected": [],
+  "restart_required": true
 }
 ```
 
-**Response `404`:**
-
-```json
-{ "success": false, "message": "No server found with ID 44" }
-```
+Keys pinned by the container's environment variables (`server-port`, `enable-rcon`,
+`rcon.port`, `rcon.password`) are rejected — they'd be silently overwritten by the image on
+the next container start anyway. Restart the server (`POST /<id>/restart`) to apply changes.
 
 ---
 
-#### `PATCH /api/servers/<id>/subdomain`
+### Players
 
-Renames the Cloudflare DNS subdomain for a server (changes the `<subdomain>` part of `<subdomain>.example.com`).
+#### Player list & roster management
 
-**Request body (JSON):**
+| Method   | Path                          | Body                                     | Notes                                                                           |
+| -------- | ----------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
+| `GET`    | `/api/servers/<id>/players`   | —                                        | `{online, whitelist, ops, banned}`. `online` requires the server to be running. |
+| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
+| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
+| `POST`   | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
+| `DELETE` | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
+| `POST`   | `/api/servers/<id>/kick`      | `{"username": "Steve", "reason": "AFK"}` | Requires running server.                                                        |
 
-| Field       | Type   | Required | Description               |
-| ----------- | ------ | -------- | ------------------------- |
-| `subdomain` | string | ✅       | New subdomain (lowercase) |
+#### Per-player action endpoints
 
-**Example request:**
+These are direct per-player actions under `/players/<username>/...`.
+
+| Method   | Path                                                    | Body                                                 | Notes                                                                                                            |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/servers/<id>/players/<username>/gamemode`         | `{"game_mode": "creative"}` or `{"game_mode": 1}`    | Accepts `0-3` or `survival/creative/adventure/spectator`. Uses RCON when running, edits player NBT when stopped. |
+| `POST`   | `/api/servers/<id>/players/<username>/kill`             | —                                                    | Runs `/kill <username>`. Requires running server.                                                                |
+| `POST`   | `/api/servers/<id>/players/<username>/heal`             | —                                                    | Sets health + food to full. Uses live entity merge when running; NBT edit when stopped.                          |
+| `POST`   | `/api/servers/<id>/players/<username>/starve`           | —                                                    | Sets food/saturation to zero. Uses live entity merge when running; NBT edit when stopped.                        |
+| `POST`   | `/api/servers/<id>/players/<username>/feed`             | —                                                    | Sets food/saturation to full. Uses live entity merge when running; NBT edit when stopped.                        |
+| `POST`   | `/api/servers/<id>/players/<username>/effects`          | `{"effect": "speed", "seconds": 60, "amplifier": 1}` | Adds a status effect to the player. Requires the server to be running.                                           |
+| `DELETE` | `/api/servers/<id>/players/<username>/effects`          | —                                                    | Removes all active effects from the player. Requires the server to be running.                                   |
+| `DELETE` | `/api/servers/<id>/players/<username>/effects/<effect>` | —                                                    | Removes one specific effect, e.g. `speed` or `minecraft:speed`. Requires the server to be running.               |
+| `GET`    | `/api/servers/<id>/players/<username>/position`         | —                                                    | Returns `{x,y,z}`. Uses live RCON entity data when possible, falls back to playerdata file.                      |
+| `POST`   | `/api/servers/<id>/players/<username>/teleport`         | `{"x": 100.5, "y": 70, "z": -20}`                    | Teleports immediately via RCON when running; updates saved `Pos` in playerdata when stopped.                     |
+| `POST`   | `/api/servers/<id>/players/<username>/whitelist`        | —                                                    | Convenience wrapper for adding to whitelist. Requires running server.                                            |
+| `POST`   | `/api/servers/<id>/players/<username>/ban`              | `{"reason": "griefing"}`                             | Convenience wrapper for ban command. Requires running server.                                                    |
+| `DELETE` | `/api/servers/<id>/players/<username>/ban`              | —                                                    | Unban. Uses RCON when running, file edit when stopped.                                                           |
+| `POST`   | `/api/servers/<id>/players/<username>/op`               | —                                                    | Convenience wrapper for op command. Requires running server.                                                     |
+
+#### Effect endpoints
+
+Effects are live-player operations and require the server to be running.
+
+##### `POST /api/servers/<id>/players/<username>/effects`
+
+Body:
 
 ```json
-{ "subdomain": "awesome-server" }
+{
+  "effect": "speed",
+  "seconds": 60,
+  "amplifier": 1,
+  "hide_particles": true
+}
 ```
 
-**Response `200`:**
+Notes:
+
+- `effect` accepts either `speed` or `minecraft:speed` style IDs.
+- `seconds` defaults to `30`.
+- `amplifier` defaults to `0` and is zero-based, so `1` means Speed II.
+- `hide_particles` defaults to `true`.
+
+Example response:
 
 ```json
 {
   "success": true,
-  "message": "Subdomain updated to 'awesome-server.example.com'"
+  "message": "Applied effect Speed to PegasusHafen404",
+  "effect": "minecraft:speed",
+  "seconds": 60,
+  "amplifier": 1,
+  "hide_particles": true
 }
 ```
 
-**Response `400` — Empty subdomain:**
+##### `DELETE /api/servers/<id>/players/<username>/effects/<effect>`
 
-```json
-{
-  "success": false,
-  "message": "'subdomain' is required"
-}
+Removes a single effect from the player.
+
+Example:
+
+```http
+DELETE /api/servers/3/players/PegasusHafen404/effects/speed
 ```
 
-**Response `404`:**
+##### `DELETE /api/servers/<id>/players/<username>/effects`
 
-```json
-{ "success": false, "message": "No server found with ID 44" }
-```
+Removes all active effects from the player.
 
----
+#### Bans (full list)
 
-### File Management
+| Method   | Path                                | Body                                          | Notes                                                                                   |
+| -------- | ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `GET`    | `/api/servers/<id>/bans`            | —                                             | Returns full ban records (uuid, name, reason, created, expires, source). Works offline. |
+| `POST`   | `/api/servers/<id>/bans`            | `{"username": "Steve", "reason": "griefing"}` | Requires running server.                                                                |
+| `DELETE` | `/api/servers/<id>/bans/<username>` | —                                             | Unban. Uses RCON when running, edits `banned-players.json` directly when stopped.       |
 
-All file endpoints operate within the server's Crafty directory:
-
-```
-/var/opt/minecraft/crafty/crafty-4/servers/<crafty_uuid>/
-```
-
-Path traversal attacks are blocked — any `..` paths return `400`.
-
----
-
-#### `GET /api/servers/<id>/files`
-
-Lists files and directories inside the server's folder.
-
-**Query parameters:**
-
-| Parameter | Type   | Required | Default   | Description          |
-| --------- | ------ | -------- | --------- | -------------------- |
-| `path`    | string | ❌       | `` (root) | Subdirectory to list |
-
-**Response `200`:**
+`GET /api/servers/<id>/bans` response:
 
 ```json
 {
   "success": true,
-  "path": "/",
-  "entries": [
-    { "name": "mods", "type": "directory", "size": null },
-    { "name": "world", "type": "directory", "size": null },
-    { "name": "server.properties", "type": "file", "size": 1155 },
-    { "name": "paper.jar", "type": "file", "size": 34829667 }
+  "bans": [
+    {
+      "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5",
+      "name": "Notch",
+      "created": "2024-01-01 12:00:00 +0000",
+      "source": "Server",
+      "expires": "forever",
+      "reason": "griefing"
+    }
   ]
 }
 ```
 
----
+#### Player history
 
-#### `GET /api/servers/<id>/files/download`
+#### `GET /api/servers/<id>/players/history`
 
-Downloads a file from the server's folder.
-
-**Query parameters:**
-
-| Parameter | Type   | Required | Description                                          |
-| --------- | ------ | -------- | ---------------------------------------------------- |
-| `path`    | string | ✅       | Relative path to the file (e.g. `server.properties`) |
-
-**Response `200`:** Binary file download with `Content-Disposition: attachment`.
-
-**Example:**
-
-```
-GET /api/servers/44/files/download?path=server.properties
-```
-
----
-
-#### `POST /api/servers/<id>/files/upload`
-
-Uploads a file into the server's folder. Accepts `multipart/form-data`.
-
-**Query parameters:**
-
-| Parameter | Type   | Required | Default   | Description                       |
-| --------- | ------ | -------- | --------- | --------------------------------- |
-| `path`    | string | ❌       | `` (root) | Target subdirectory (e.g. `mods`) |
-
-**Form fields:**
-
-| Field  | Type | Required | Description        |
-| ------ | ---- | -------- | ------------------ |
-| `file` | file | ✅       | The file to upload |
-
-**Response `201`:**
+Returns every player who has ever joined the server, sourced from `usercache.json`.
 
 ```json
 {
   "success": true,
-  "message": "Uploaded mymod.jar",
-  "path": "/crafty/servers/80734f9e-.../mods/mymod.jar"
+  "players": [
+    { "name": "Steve", "uuid": "...", "last_seen": "2026-07-04 00:00:00 +0000" }
+  ]
 }
 ```
 
----
+#### Per-player NBT data
 
-#### `DELETE /api/servers/<id>/files/delete`
+Player health, food, inventory, ender chest, and saved position are stored in
+`world/playerdata/<uuid>.dat`.
 
-Deletes a file from the server's folder.
+> **Note on live servers**: if a player is currently connected, the server keeps state in
+> memory and writes it to disk on disconnect. NBT-based edits can be overwritten in that
+> case. Responses include a `"warning"` field when relevant.
 
-**Query parameters:**
+##### `GET /api/servers/<id>/players/<username>/data`
 
-| Parameter | Type   | Required | Description               |
-| --------- | ------ | -------- | ------------------------- |
-| `path`    | string | ✅       | Relative path to the file |
-
-**Response `200`:**
+Returns health, food, XP level, game mode, full inventory, and ender chest contents.
 
 ```json
 {
   "success": true,
-  "message": "Deleted banned-players.json"
+  "uuid": "069a79f4-...",
+  "username": "Steve",
+  "health": 20.0,
+  "food_level": 20,
+  "food_saturation": 5.0,
+  "xp_level": 3,
+  "game_mode": 0,
+  "inventory": [
+    { "slot": 0, "id": "minecraft:diamond_sword", "count": 1 },
+    { "slot": 9, "id": "minecraft:bread", "count": 32 }
+  ],
+  "enderchest": [{ "slot": 0, "id": "minecraft:elytra", "count": 1 }]
 }
+```
+
+Game mode values: `0` Survival, `1` Creative, `2` Adventure, `3` Spectator.
+
+Inventory slot ranges: `0-8` hotbar, `9-35` main inventory, `100-103` armor (feet→head), `-106` offhand.
+
+#### Inventory endpoints
+
+| Method   | Path                                                    | Body                                            | Notes                                                                                                                        |
+| -------- | ------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `DELETE` | `/api/servers/<id>/players/<username>/inventory`        | —                                               | Clear the entire inventory. Uses RCON `/clear` when running, NBT edit when stopped.                                          |
+| `DELETE` | `/api/servers/<id>/players/<username>/inventory/<slot>` | —                                               | Remove the item at a specific slot. NBT edit (works offline).                                                                |
+| `POST`   | `/api/servers/<id>/players/<username>/inventory`        | `{"item_id": "minecraft:diamond", "count": 64}` | Add an item. Uses RCON `/give` when running, NBT edit when stopped. `slot` is optional — first free slot is used if omitted. |
+
+`POST /inventory` body fields:
+
+| Field     | Type   | Required | Default | Notes                                                          |
+| --------- | ------ | -------- | ------- | -------------------------------------------------------------- |
+| `item_id` | string | yes      | —       | Namespaced item ID, e.g. `minecraft:diamond_sword`.            |
+| `count`   | int    | no       | `1`     | Stack size.                                                    |
+| `slot`    | int    | no       | auto    | Target inventory slot. Existing item at that slot is replaced. |
+
+#### Ender chest endpoints
+
+| Method   | Path                                                     | Body                                          | Notes                                                                                        |
+| -------- | -------------------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `DELETE` | `/api/servers/<id>/players/<username>/enderchest`        | —                                             | Clear the entire ender chest. NBT edit (works offline).                                      |
+| `DELETE` | `/api/servers/<id>/players/<username>/enderchest/<slot>` | —                                             | Remove the item at the given slot (0-26). NBT edit.                                          |
+| `POST`   | `/api/servers/<id>/players/<username>/enderchest`        | `{"item_id": "minecraft:elytra", "count": 1}` | Add an item to the ender chest. `slot` (0-26) is optional — first free slot used if omitted. |
+
+#### Statistics endpoint
+
+#### `GET /api/servers/<id>/players/<username>/statistics`
+
+Returns aggregated player statistics sourced from `world/stats/<uuid>.json`.
+
+```json
+{
+  "success": true,
+  "username": "Steve",
+  "uuid": "069a79f4-...",
+  "statistics": {
+    "playtime_ticks": 123456,
+    "playtime_seconds": 6172,
+    "playtime_hours": 1.71,
+    "deaths": 2,
+    "player_kills": 5,
+    "kd": 2.5,
+    "distance_traveled_blocks": 8421.32,
+    "blocks_removed": 913,
+    "blocks_added": 401,
+    "items_used": 2021,
+    "entities_killed": 87
+  }
+}
+```
+
+#### Selective player reset/delete endpoint
+
+#### `DELETE /api/servers/<id>/players/<username>/data`
+
+Selective data reset/deletion. Accepts either a `target` string or a `targets` array.
+
+Valid targets:
+
+- `xp`
+- `inventory`
+- `enderchest`
+- `playerdata`
+- `statistics`
+- `advancements`
+- `everything`
+
+Examples:
+
+```json
+{ "target": "everything" }
+```
+
+```json
+{ "targets": ["xp", "inventory", "statistics"] }
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Applied player data reset for Steve",
+  "deleted": ["inventory", "statistics", "xp"],
+  "not_found": []
+}
+```
+
+For running servers, responses may include a warning because online players can overwrite
+disk-based edits on disconnect.
+
+---
+
+### Backups
+
+| Method   | Path                                            | Body                                                     | Notes                                                                 |
+| -------- | ----------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
+| `GET`    | `/api/servers/<id>/backups`                     | —                                                        | List backups, newest first.                                           |
+| `POST`   | `/api/servers/<id>/backups`                     | —                                                        | Create a manual backup now (flushes the world via RCON if running).   |
+| `DELETE` | `/api/servers/<id>/backups/<backup_id>`         | —                                                        | Delete a backup archive and its record.                               |
+| `POST`   | `/api/servers/<id>/backups/<backup_id>/restore` | —                                                        | Stops the server, wipes the data dir, extracts the archive, restarts. |
+| `GET`    | `/api/servers/<id>/backups/schedule`            | —                                                        | Returns `{cron, retention, enabled}` or `{"schedule": null}`.         |
+| `PUT`    | `/api/servers/<id>/backups/schedule`            | `{"cron": "0 4 * * *", "retention": 5, "enabled": true}` | Create/update a scheduled backup. 5-field crontab syntax.             |
+| `DELETE` | `/api/servers/<id>/backups/schedule`            | —                                                        | Remove the schedule.                                                  |
+
+Scheduled backups are pruned to `retention` most-recent copies after each run (manual
+backups are never auto-pruned).
+
+---
+
+### Files
+
+Operate directly on a server's data directory (`SERVERS_DIR/<id>/`). All paths are
+relative and guarded against traversal outside the server's directory.
+
+| Method   | Path                                             | Notes                                            |
+| -------- | ------------------------------------------------ | ------------------------------------------------ |
+| `GET`    | `/api/servers/<id>/files?path=subdir`            | List directory entries (`name`, `type`, `size`). |
+| `GET`    | `/api/servers/<id>/files/download?path=file.txt` | Download a file.                                 |
+| `POST`   | `/api/servers/<id>/files/upload?path=subdir`     | multipart/form-data, field `file`.               |
+| `DELETE` | `/api/servers/<id>/files/delete?path=file.txt`   | Delete a single file.                            |
+
+Upload behavior:
+
+- Any non-existing `path` is treated as a directory path and will be created automatically if needed.
+- Nested directories like `path=mods/plugins/custom` are supported.
+- Directory names containing dots are also supported, e.g. `path=configs/v1.0`.
+- The uploaded file keeps its original filename by default.
+- Optionally provide `filename=plugin.jar` to rename the uploaded file inside the target directory.
+
+Examples:
+
+```http
+POST /api/servers/3/files/upload?path=mods/plugins/custom
+```
+
+```http
+POST /api/servers/3/files/upload?path=mods/plugins/custom&filename=my-plugin.jar
 ```
 
 ---
 
-## Schemas
+### Networking
 
-### Server Object
+#### `POST /api/servers/<id>/tunnel`
 
-```ts
-interface Server {
-  id: number; // Database primary key
-  name: string; // Display name
-  type: string; // "paper" | "forge" | "fabric" | "vanilla" | "purpur"
-  version: string; // Minecraft version e.g. "1.18.2"
-  port: number; // Local server port
-  crafty_id: string; // Crafty Controller UUID
-  created_at: string; // ISO 8601 datetime
-  tunnels: Tunnel[];
-  dns_records: DnsRecord[];
-}
+Body (all optional): `{"region": "Germany", "subscription": "premium", "agent": "EU-Central"}`.
+Creates a PlayIT tunnel and Cloudflare CNAME + SRV records for an existing server (e.g.
+after a port change).
 
-interface Tunnel {
-  address: string; // PlayIT tunnel hostname
-  local_port: number; // Local port the tunnel forwards to
-  external_port: number; // Public port players connect to
-}
+#### `PATCH /api/servers/<id>/subdomain`
 
-interface DnsRecord {
-  type: "CNAME" | "SRV";
-  name: string; // Full DNS name
-  target: string; // Tunnel hostname
-  port: number | null; // Only present on SRV records
-}
-```
-
-### File Entry Object
-
-```ts
-interface FileEntry {
-  name: string;
-  type: "file" | "directory";
-  size: number | null; // Bytes, null for directories
-}
-```
-
-### Provision Request
-
-```ts
-interface ProvisionRequest {
-  name: string; // Required
-  type?: "paper" | "forge" | "fabric" | "vanilla" | "purpur"; // Default: "paper"
-  version?: string; // Default: "1.21.4"
-  port?: number; // Default: 25565, range: 1024–65535
-  mem_min?: number; // Default: 2 (GB)
-  mem_max?: number; // Default: 4 (GB)
-}
-```
-
-### Provision Response
-
-```ts
-interface ProvisionResponse {
-  success: boolean;
-  message: string;
-  server_id: number; // Database ID
-  crafty_id: string; // Crafty UUID
-  connect_address: string; // e.g. "paper-server.homeops.services"
-  tunnel_address: string; // e.g. "single-washstand.deu.mcjoin.link"
-  external_port: number; // Public port
-}
-```
+Body: `{"subdomain": "new-name"}`. Deletes old Cloudflare DNS records and creates new ones
+under the given subdomain, pointing at the existing tunnel.
 
 ---
 
-## Frontend Integration Guide
+## CLI Scripts
 
-### Recommended Approach
-
-Use the database `id` field (integer) from `GET /api/servers` as the primary key for all subsequent operations — not the `crafty_id`.
-
-### Example: Fetch all servers
-
-```js
-const res = await fetch("http://localhost:5000/api/servers", {
-  headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
-});
-const { servers } = await res.json();
-```
-
-### Example: Create a server
-
-```js
-const res = await fetch("http://localhost:5000/api/servers", {
-  method: "POST",
-  headers: {
-    Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G",
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    name: "My Server",
-    type: "paper",
-    version: "1.21.4",
-    port: 25565,
-  }),
-});
-const result = await res.json();
-// result.server_id  ← use this for all control endpoints
-```
-
-> ⚠️ Server creation takes 30–90+ seconds. Show a loading state and poll `GET /api/servers/<id>/stats` until `running` is `true`.
-
-### Example: Start / Stop / Restart / Kill
-
-```js
-const action = "start"; // or 'stop', 'restart', 'kill'
-await fetch(`http://localhost:5000/api/servers/${serverId}/${action}`, {
-  method: "POST",
-  headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
-});
-```
-
-### Example: Send a console command
-
-```js
-await fetch(`http://localhost:5000/api/servers/${serverId}/command`, {
-  method: "POST",
-  headers: {
-    Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G",
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({ command: "say Hello!" }),
-});
-```
-
-### Example: Poll live stats
-
-```js
-async function pollStats(serverId, intervalMs = 3000) {
-  const res = await fetch(
-    `http://localhost:5000/api/servers/${serverId}/stats`,
-    {
-      headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
-    },
-  );
-  const { data } = await res.json();
-  // data.running  → boolean
-  // data.online   → current player count
-  // data.cpu      → CPU usage %
-  // data.mem      → RAM usage MB
-  return data;
-}
-```
-
-### Example: Upload a mod file
-
-```js
-const formData = new FormData();
-formData.append("file", fileInput.files[0]);
-
-await fetch(
-  `http://localhost:5000/api/servers/${serverId}/files/upload?path=mods`,
-  {
-    method: "POST",
-    headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
-    body: formData,
-  },
-);
-```
-
-### Example: Browse and download files
-
-```js
-// List root
-const res = await fetch(`http://localhost:5000/api/servers/${serverId}/files`, {
-  headers: { Authorization: "Bearer iNn6XZBucG6PoZb98qz3A9W9G" },
-});
-const { entries } = await res.json();
-
-// Download a file
-window.location.href = `http://localhost:5000/api/servers/${serverId}/files/download?path=server.properties`;
-```
-
-### CORS
-
-If your frontend runs on a different origin, add Flask-CORS:
+For quick testing without running the full API:
 
 ```bash
-pip install flask-cors
+python scripts/init_db.py                          # initialize the local database
+python main.py --name "Test SMP" --type paper --version 1.21.4 --port 25565
+python delete_server.py <db_server_id>              # interactive confirm + full teardown
 ```
 
-```python
-# In app.py
-from flask_cors import CORS
-CORS(app)
-```
+## OpenAPI Spec
 
-Or restrict to specific origins:
+A static OpenAPI 3.0 document describing every endpoint lives at `openapi.yaml` in the
+repo root. Import it into Postman, Insomnia, or any OpenAPI-compatible tool for
+interactive exploration.
 
-```python
-CORS(app, origins=["http://localhost:3000", "https://your-frontend.com"])
-```
+## Security Notes
+
+- **The Docker socket is root-equivalent.** CSCM mounts `/var/run/docker.sock` to manage
+  server containers — anyone who can reach the CSCM API with a valid JWT can, transitively,
+  do anything on the host that root can do via Docker. Keep the API behind a firewall/VPN,
+  use a strong admin password, and don't expose it directly to the internet.
+- Every container CSCM touches is filtered by the `cscm.managed=true` and
+  `cscm.server_id=<id>` labels — it never operates on containers it didn't create.
+- RCON has no exposed port; commands run via `docker exec rcon-cli` inside the container.
+- The console SSE endpoint accepts the JWT as a query parameter (`?token=`) because
+  `EventSource` cannot set custom headers — use HTTPS in production so the token isn't
+  visible in transit or in server access logs.
+- File endpoints resolve and validate every path against the server's own data directory
+  to prevent path traversal.
+
+## Troubleshooting
+
+**Server stuck in `starting` forever.** Large modpacks (Forge) or first-time Paper/Purpur
+downloads can take minutes. Check `GET /api/servers/<id>/logs` for download progress or
+errors. If health checks never pass, check `docker logs cscm-mc-<id>` on the host for the
+full picture.
+
+**`SERVERS_DIR_HOST` / `SERVERS_DIR` mismatch.** Symptoms: a server's container starts but
+`server.properties`/files never appear, or file endpoints see an empty directory. Confirm
+both paths resolve to the same physical location — see [Configuration](#configuration).
+
+**Port already in use.** `POST /api/servers` and `PATCH /<id>/port` return `409` if the
+requested port collides with another CSCM-managed server (DB-level uniqueness) or the
+Docker daemon rejects it because something else on the host is already bound to it.
+
+**PlayIT tunnel creation fails.** The PlayIT automation drives a real browser session via
+Playwright — confirm `PLAYIT_EMAIL`/`PLAYIT_PASSWORD` are correct and, if running headless,
+that Chromium's dependencies are installed (the provided `Dockerfile` handles this).

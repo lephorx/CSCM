@@ -2,204 +2,72 @@
 """
 Interactive CLI for deprovisioning a server by its database ID.
 
-Deprovisioning sequence:
-    1. Fetch the server record and all linked resources from the database.
-    2. Display a summary and prompt for confirmation.
-    3. Delete the Crafty game server.
-    4. Delete all Cloudflare DNS records using their stored record IDs.
-    5. Delete the database row (cascades to playit_tunnels and dns_records).
+Delegates to server_manager.deprovision_server(), which stops/removes the
+server's container, deletes its data directory, removes the PlayIT tunnel
+and Cloudflare DNS records, and deletes the database row (cascading to
+linked tunnels, DNS records, and backups).
 
 Usage:
     python delete_server.py <db_server_id>
     python delete_server.py          # prompts interactively
 """
 
-import asyncio
-import os
 import sys
-import requests
-import urllib3
-import psycopg2
-from dotenv import load_dotenv
 
-from playit_manager import delete_tunnel
-from cloudflare_manager import delete_dns_record_by_id
+from db import get_db
+from server_manager import deprovision_server
 from logger import get_logger
-
-load_dotenv()
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 log = get_logger("delete_server")
 
-# ---------------------------------------------------------------------------
-# Database connection
-# ---------------------------------------------------------------------------
-try:
-    connection = psycopg2.connect(
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        sslmode="require",
-    )
-    cursor = connection.cursor()
-except psycopg2.OperationalError as exc:
-    log.error("Database connection failed: %s", exc)
-    sys.exit(1)
 
-# ---------------------------------------------------------------------------
-# Crafty Controller configuration
-# ---------------------------------------------------------------------------
-base_url        = os.getenv("BASE_URL", "https://localhost:8443")
-crafty_username = os.getenv("CRAFTY_USER", "admin")
-crafty_password = os.getenv("CRAFTY_PASS", "admin")
+def _print_summary(db_server_id: int) -> bool:
+    """Print server details for confirmation. Returns False if not found."""
+    with get_db() as conn:
+        row = conn.execute("SELECT id, name, slug, serverport FROM servers WHERE id = ?", (db_server_id,)).fetchone()
+        if not row:
+            log.error("No server found with database ID %d", db_server_id)
+            return False
 
+        tunnels = conn.execute(
+            "SELECT tunnel_address, local_port, external_port FROM playit_tunnels WHERE server_id = ?",
+            (db_server_id,),
+        ).fetchall()
+        dns_rows = conn.execute(
+            "SELECT record_type, name, target, port FROM dns_records WHERE server_id = ?",
+            (db_server_id,),
+        ).fetchall()
 
-def crafty_login() -> str | None:
-    """Authenticate with Crafty Controller and return a bearer token."""
-    try:
-        r = requests.post(
-            f"{base_url}/api/v2/auth/login",
-            json={"username": crafty_username, "password": crafty_password},
-            verify=False,
-        )
-        data = r.json()
-        if r.status_code == 200 and data.get("status") == "ok":
-            return data["data"]["token"]
-        error_detail = data.get("error_data") or data.get("error") or r.text
-        log.error("Crafty authentication failed: HTTP %d — %s", r.status_code, error_detail)
-        return None
-    except requests.exceptions.ConnectionError:
-        log.error("Cannot reach Crafty Controller at %s", base_url)
-        return None
-
-
-def _delete_crafty_server(crafty_server_id: str, headers: dict) -> None:
-    """Send a DELETE request to Crafty for the given server ID."""
-    try:
-        r = requests.delete(
-            f"{base_url}/api/v2/servers/{crafty_server_id}",
-            headers=headers,
-            verify=False,
-        )
-        if r.ok:
-            log.info("Crafty server deleted: crafty_id=%s", crafty_server_id)
-        else:
-            log.warning(
-                "Crafty deletion returned HTTP %d for crafty_id=%s: %s",
-                r.status_code, crafty_server_id, r.text,
-            )
-    except requests.exceptions.RequestException as exc:
-        log.error("Error deleting Crafty server: %s", exc)
+    print()
+    print(f"  Server ID   : {row['id']}")
+    print(f"  Name        : {row['name']}")
+    print(f"  Subdomain   : {row['slug']}")
+    print(f"  Port        : {row['serverport']}")
+    for t in tunnels:
+        print(f"  Tunnel      : {t['tunnel_address']}  local={t['local_port']}  external={t['external_port']}")
+    for d in dns_rows:
+        port_suffix = f":{d['port']}" if d["port"] else ""
+        print(f"  DNS [{d['record_type']:5}] : {d['name']} -> {d['target']}{port_suffix}")
+    print()
+    return True
 
 
 def delete_server(db_server_id: int) -> None:
-    """Deprovision a server interactively.
-
-    Fetches all linked resources, prompts for confirmation, then
-    removes the Crafty server, Cloudflare DNS records, and the
-    database entry.
-    """
-    # Fetch server record
-    cursor.execute(
-        "SELECT id, name, craftyid FROM servers WHERE id = %s",
-        (db_server_id,),
-    )
-    row = cursor.fetchone()
-    if not row:
-        log.error("No server found with database ID %d", db_server_id)
+    """Deprovision a server interactively, after displaying a confirmation summary."""
+    if not _print_summary(db_server_id):
         return
-
-    db_id, server_name, crafty_server_id = row
-    subdomain = server_name.lower().replace(" ", "-")
-
-    # Fetch linked DNS records
-    cursor.execute(
-        "SELECT record_type, name, target, port, cloudflare_record_id"
-        " FROM dns_records WHERE server_id = %s",
-        (db_server_id,),
-    )
-    dns_rows = cursor.fetchall()
-
-    # Fetch linked PlayIT tunnels
-    cursor.execute(
-        "SELECT tunnel_name, tunnel_address, local_port, external_port"
-        " FROM playit_tunnels WHERE server_id = %s",
-        (db_server_id,),
-    )
-    tunnel_rows = cursor.fetchall()
-
-    # Display summary
-    print()
-    print(f"  Server ID   : {db_id}")
-    print(f"  Name        : {server_name}")
-    print(f"  Subdomain   : {subdomain}")
-    print(f"  Crafty ID   : {crafty_server_id or '(none)'}")
-    for t in tunnel_rows:
-        print(f"  Tunnel      : {t[1]}  local={t[2]}  external={t[3]}")
-    for d in dns_rows:
-        port_suffix = f":{d[3]}" if d[3] else ""
-        print(f"  DNS [{d[0]:5}] : {d[1]} -> {d[2]}{port_suffix}")
-    print()
 
     confirm = input("Permanently delete this server and all its resources? [y/N] ").strip().lower()
     if confirm != "y":
         print("Operation cancelled.")
         return
 
-    # Step 1: Delete Crafty server
-    print()
-    log.info("[1/4] Deleting Crafty server")
-    if crafty_server_id:
-        token = crafty_login()
-        if token:
-            _delete_crafty_server(crafty_server_id, {"Authorization": f"Bearer {token}"})
-        else:
-            log.warning("Skipping Crafty deletion — authentication failed")
+    result = deprovision_server(db_server_id)
+    if result["success"]:
+        print(f"\n{result['message']}\n")
     else:
-        log.debug("No Crafty ID on record, skipping Crafty deletion")
-
-    # Step 2: Delete PlayIT tunnels
-    log.info("[2/4] Deleting PlayIT tunnels")
-    if tunnel_rows:
-        for t in tunnel_rows:
-            tunnel_name = t[0]
-            log.debug("Deleting tunnel: name=%s", tunnel_name)
-            success = asyncio.run(delete_tunnel(tunnel_name))
-            if not success:
-                log.warning(
-                    "Could not delete PlayIT tunnel '%s' — may need manual removal",
-                    tunnel_name,
-                )
-    else:
-        log.debug("No PlayIT tunnels on record for db_id=%d", db_server_id)
-
-    # Step 3: Delete Cloudflare DNS records
-    log.info("[3/4] Deleting Cloudflare DNS records")
-    if dns_rows:
-        for _, name, _, _, cf_id in dns_rows:
-            log.debug("Deleting record: name=%s, cf_id=%s", name, cf_id)
-            delete_dns_record_by_id(cf_id)
-    else:
-        log.debug("No DNS records on record for db_id=%d", db_server_id)
-
-    # Step 4: Delete database entry
-    log.info("[4/4] Deleting database entry")
-    try:
-        cursor.execute("DELETE FROM servers WHERE id = %s", (db_server_id,))
-        connection.commit()
-        log.info(
-            "Server deprovisioned: db_id=%d, name=%s (tunnel + DNS records cascaded)",
-            db_server_id, server_name,
-        )
-    except psycopg2.Error as exc:
-        log.error("Database error during deletion: %s", exc)
-        connection.rollback()
-        return
-
-    print(f"\nServer '{server_name}' has been fully deleted.\n")
+        log.error("Deprovisioning failed: %s", result["message"])
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -11,8 +11,10 @@ import jwt
 import pyotp
 import qrcode
 import qrcode.image.svg
+from dotenv import load_dotenv
 from werkzeug.security import check_password_hash, generate_password_hash
 
+load_dotenv()
 
 AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", Path(__file__).with_name("auth.db")))
 JWT_LIFETIME_HOURS = int(os.getenv("JWT_LIFETIME_HOURS", "8"))
