@@ -143,6 +143,11 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
                 log.warning("Agent selection may have failed; continuing anyway")
             await asyncio.sleep(1)
 
+            # Click Next after agent selection
+            log.debug("Clicking Next after agent selection")
+            await page.click('button.maeflab')
+            await asyncio.sleep(1)
+
             # Set local port
             log.debug("Setting local port: %s", tunnel_port)
             await page.fill('input[placeholder="NULL"]', str(tunnel_port))
