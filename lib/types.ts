@@ -144,6 +144,13 @@ export interface Backup {
   backup_type?: "zip" | "zfs"
 }
 
+export interface BackupSchedule {
+  cron: string
+  retention: number
+  enabled: boolean
+  backup_type?: "zip" | "zfs"
+}
+
 // ---------------------------------------------------------------------------
 // Player extended data
 // ---------------------------------------------------------------------------
