@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import secrets
 import sqlite3
@@ -76,6 +77,47 @@ def _get_or_create_config(key: str, default_value: str) -> str:
             (key,),
         ).fetchone()
         return str(row["value"]) if row else default_value
+
+
+def get_config_value(key: str, default: str | None = None) -> str | None:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT value FROM app_config WHERE key = ?",
+            (key,),
+        ).fetchone()
+    if row is None:
+        return default
+    return str(row["value"])
+
+
+def set_config_value(key: str, value: str) -> None:
+    with closing(_connect()) as connection:
+        connection.execute(
+            "INSERT INTO app_config (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        connection.commit()
+
+
+def delete_config_value(key: str) -> None:
+    with closing(_connect()) as connection:
+        connection.execute("DELETE FROM app_config WHERE key = ?", (key,))
+        connection.commit()
+
+
+def get_config_json(key: str, default: dict | list | None = None):
+    raw = get_config_value(key)
+    if raw is None:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return default
+
+
+def set_config_json(key: str, value) -> None:
+    set_config_value(key, json.dumps(value, sort_keys=True))
 
 
 def has_users() -> bool:

@@ -5,6 +5,7 @@ import sqlite3
 from flask import Blueprint, jsonify, request
 
 import docker_manager
+import properties_manager
 from auth_helpers import authorize
 from db import get_db
 from docker_manager import SERVER_TYPES
@@ -123,6 +124,7 @@ def create_server():
     mem_max = body.get("mem_max", 4)
     subscription = body.get("subscription")
     agent = body.get("agent")
+    initial_properties = body.get("properties")
 
     if not isinstance(port, int) or not (1024 <= port <= 65535):
         return jsonify({"error": "'port' must be an integer between 1024 and 65535"}), 400
@@ -133,6 +135,8 @@ def create_server():
         }), 400
     if subscription and subscription.lower() not in ("premium", "free"):
         return jsonify({"error": "'subscription' must be 'premium' or 'free'"}), 400
+    if initial_properties is not None and not isinstance(initial_properties, dict):
+        return jsonify({"error": "'properties' must be an object when provided"}), 400
 
     log.info(
         "Server creation requested: name=%s, type=%s, version=%s, port=%d",
@@ -151,6 +155,15 @@ def create_server():
     )
 
     if result["success"]:
+        properties_result = properties_manager.apply_initial_properties(result["server_id"], initial_properties)
+        if properties_result.get("changed"):
+            result["initial_properties"] = {
+                "changed": properties_result.get("changed", []),
+                "rejected": properties_result.get("rejected", []),
+                "restart_required": properties_result.get("restart_required", False),
+            }
+        if properties_result.get("warning"):
+            result["warning"] = properties_result["warning"]
         log.info("Server creation completed: db_id=%s", result.get("server_id"))
         return jsonify(result), 201
     log.error("Server creation failed: %s", result.get("message"))

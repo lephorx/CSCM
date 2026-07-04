@@ -208,6 +208,9 @@ paths:
                 mem_max: { type: integer, default: 4 }
                 subscription: { type: string, enum: [premium, free] }
                 agent: { type: string }
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
       responses:
         "201": { description: Created }
         "400": { description: Validation error }
@@ -371,6 +374,59 @@ paths:
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       responses:
         { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/defaults/properties:
+    get:
+      tags: [Properties]
+      summary: Get default server.properties values for new servers
+      responses:
+        { "200": { description: OK } }
+    put:
+      tags: [Properties]
+      summary: Replace all default server.properties values
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        { "200": { description: OK }, "400": { description: Validation error } }
+    patch:
+      tags: [Properties]
+      summary: Merge/update default server.properties values
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        { "200": { description: OK }, "400": { description: Validation error } }
+    delete:
+      tags: [Properties]
+      summary: Clear all default server.properties values or selected keys
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keys:
+                  type: array
+                  items: { type: string }
+      responses:
+        { "200": { description: OK }, "400": { description: Validation error } }
     patch:
       tags: [Properties]
       parameters: [{ $ref: "#/components/parameters/ServerId" }]

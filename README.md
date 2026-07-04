@@ -369,16 +369,17 @@ download/world generation happen inside the container afterward. Poll
 
 Request body:
 
-| Field          | Type   | Required | Default     | Notes                                                   |
-| -------------- | ------ | -------- | ----------- | ------------------------------------------------------- |
-| `name`         | string | yes      | —           | Display name; slugified for the subdomain and DNS name. |
-| `type`         | string | no       | `paper`     | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`. |
-| `version`      | string | no       | `1.21.4`    | Minecraft version string.                               |
-| `port`         | int    | no       | `25565`     | Host port (1024–65535), must be unique across servers.  |
-| `mem_min`      | int    | no       | `2`         | Minimum JVM heap, GB.                                   |
-| `mem_max`      | int    | no       | `4`         | Maximum JVM heap, GB.                                   |
-| `subscription` | string | no       | env default | `premium` or `free` (PlayIT).                           |
-| `agent`        | string | no       | env default | PlayIT agent name.                                      |
+| Field          | Type   | Required | Default     | Notes                                                     |
+| -------------- | ------ | -------- | ----------- | --------------------------------------------------------- |
+| `name`         | string | yes      | —           | Display name; slugified for the subdomain and DNS name.   |
+| `type`         | string | no       | `paper`     | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`.   |
+| `version`      | string | no       | `1.21.4`    | Minecraft version string.                                 |
+| `port`         | int    | no       | `25565`     | Host port (1024–65535), must be unique across servers.    |
+| `mem_min`      | int    | no       | `2`         | Minimum JVM heap, GB.                                     |
+| `mem_max`      | int    | no       | `4`         | Maximum JVM heap, GB.                                     |
+| `subscription` | string | no       | env default | `premium` or `free` (PlayIT).                             |
+| `agent`        | string | no       | env default | PlayIT agent name.                                        |
+| `properties`   | object | no       | defaults    | Initial `server.properties` values to apply during setup. |
 
 Response `201`:
 
@@ -392,6 +393,24 @@ Response `201`:
   "external_port": 34567
 }
 ```
+
+You can apply `server.properties` during setup by including a `properties` object:
+
+```json
+{
+  "name": "Survival SMP",
+  "type": "paper",
+  "port": 25565,
+  "properties": {
+    "motd": "Welcome to the server",
+    "difficulty": "hard",
+    "max-players": "20"
+  }
+}
+```
+
+If default server properties are configured, they are merged first and request-level
+`properties` override them key-by-key.
 
 #### `DELETE /api/servers/<id>`
 
@@ -486,6 +505,48 @@ new `INIT_MEMORY`/`MAX_MEMORY` values.
 ---
 
 ### server.properties
+
+#### Default server properties
+
+These endpoints manage the default `server.properties` values automatically applied to
+new servers during provisioning.
+
+##### `GET /api/defaults/properties`
+
+Returns the currently configured default server properties.
+
+##### `PUT /api/defaults/properties`
+
+Replace the full default properties set.
+
+Body:
+
+```json
+{
+  "properties": {
+    "motd": "Welcome!",
+    "difficulty": "normal",
+    "max-players": "20"
+  }
+}
+```
+
+##### `PATCH /api/defaults/properties`
+
+Merge/update selected default properties.
+
+##### `DELETE /api/defaults/properties`
+
+Clears all default properties, or only selected keys.
+
+Body to delete selected keys:
+
+```json
+{ "keys": ["motd", "difficulty"] }
+```
+
+Blacklisted keys such as `server-port`, `enable-rcon`, `rcon.port`, and
+`rcon.password` are rejected here too.
 
 #### `GET /api/servers/<id>/properties`
 

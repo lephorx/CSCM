@@ -299,7 +299,7 @@ def list_servers() -> list[dict]:
     try:
         with get_db() as conn:
             servers = conn.execute(
-                "SELECT id, name, slug, type, version, serverport, status, createdat"
+                "SELECT id, name, slug, type, version, serverport, mem_min_gb, mem_max_gb, status, createdat"
                 " FROM servers ORDER BY id"
             ).fetchall()
             result = []
