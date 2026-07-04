@@ -461,10 +461,10 @@ function PlayerDetailDialog({
   const [effectAmplifier, setEffectAmplifier] = useState("0")
 
   const load = useCallback(
-    async (silent = false) => {
+    async (silent = false, refresh = false) => {
       if (!silent) setLoading(true)
       try {
-        const res = await api.players.getData(serverId, username)
+        const res = await api.players.getData(serverId, username, refresh)
         setData(res)
       } catch (err) {
         if (!silent)
@@ -506,10 +506,10 @@ function PlayerDetailDialog({
     }
   }
 
-  async function loadStats() {
+  async function loadStats(refresh = false) {
     setStatsLoading(true)
     try {
-      const res = await api.players.getStatistics(serverId, username)
+      const res = await api.players.getStatistics(serverId, username, refresh)
       setStatsData(res?.statistics ?? res)
     } catch (err) {
       toast.error(
@@ -595,6 +595,24 @@ function PlayerDetailDialog({
           style={{ imageRendering: "pixelated" }}
         />
         <span className="text-base font-semibold">{username}</span>
+        <Button
+          size="sm"
+          variant="outline"
+          className="ml-auto gap-1.5 text-xs"
+          disabled={loading}
+          title="Flush player data to disk then reload (live state)"
+          onClick={() => {
+            load(false, true)
+            if (statsData) loadStats(true)
+          }}
+        >
+          {loading ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <RefreshCw className="size-3" />
+          )}
+          Live
+        </Button>
       </div>
 
       <div className="overflow-y-auto p-4">

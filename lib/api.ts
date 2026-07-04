@@ -118,8 +118,12 @@ export const api = {
         body: JSON.stringify({ username, reason }),
       }),
     history: (id: number) => apiCall(`/servers/${id}/players/history`),
-    getData: (id: number, username: string) =>
-      apiCall(`/servers/${id}/players/${encodeURIComponent(username)}/data`),
+    getData: (id: number, username: string, refresh = false) =>
+      apiCall(
+        `/servers/${id}/players/${encodeURIComponent(username)}/data${
+          refresh ? "?refresh=true" : ""
+        }`
+      ),
     clearInventory: (id: number, username: string) =>
       apiCall(
         `/servers/${id}/players/${encodeURIComponent(username)}/inventory`,
@@ -221,9 +225,11 @@ export const api = {
       apiCall(`/servers/${id}/players/${encodeURIComponent(username)}/op`, {
         method: "POST",
       }),
-    getStatistics: (id: number, username: string) =>
+    getStatistics: (id: number, username: string, refresh = false) =>
       apiCall(
-        `/servers/${id}/players/${encodeURIComponent(username)}/statistics`
+        `/servers/${id}/players/${encodeURIComponent(username)}/statistics${
+          refresh ? "?refresh=true" : ""
+        }`
       ),
     resetData: (id: number, username: string, targets: string[]) =>
       apiCall(`/servers/${id}/players/${encodeURIComponent(username)}/data`, {
