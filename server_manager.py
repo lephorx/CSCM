@@ -56,6 +56,7 @@ def provision_server(
     server_name: str,
     server_type: str = "paper",
     version: str = "1.21.4",
+    loader_version: str | None = None,
     server_port: int = 25565,
     mem_min: int = 2,
     mem_max: int = 4,
@@ -104,9 +105,9 @@ def provision_server(
         with get_db() as conn:
             cur = conn.execute(
                 "INSERT INTO servers"
-                " (name, slug, type, version, serverport, mem_min_gb, mem_max_gb, rcon_password, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'provisioning')",
-                (server_name, subdomain, server_type, version, server_port, mem_min, mem_max, rcon_password),
+                " (name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, rcon_password, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning')",
+                (server_name, subdomain, server_type, version, loader_version, server_port, mem_min, mem_max, rcon_password),
             )
             db_server_id = cur.lastrowid
         log.info("Server record persisted: db_id=%d", db_server_id)
@@ -299,7 +300,7 @@ def list_servers() -> list[dict]:
     try:
         with get_db() as conn:
             servers = conn.execute(
-                "SELECT id, name, slug, type, version, serverport, mem_min_gb, mem_max_gb, status, createdat"
+                "SELECT id, name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, status, createdat"
                 " FROM servers ORDER BY id"
             ).fetchall()
             result = []
@@ -320,6 +321,7 @@ def list_servers() -> list[dict]:
                     "slug": s["slug"],
                     "type": s["type"],
                     "version": s["version"],
+                    "loader_version": s["loader_version"],
                     "port": s["serverport"],
                     "mem_min": s["mem_min_gb"],
                     "mem_max": s["mem_max_gb"],

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS servers (
     slug          TEXT NOT NULL UNIQUE,
     type          TEXT NOT NULL,
     version       TEXT NOT NULL,
+    loader_version TEXT,
     serverport    INTEGER NOT NULL UNIQUE,
     mem_min_gb    INTEGER NOT NULL DEFAULT 2,
     mem_max_gb    INTEGER NOT NULL DEFAULT 4,

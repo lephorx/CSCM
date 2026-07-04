@@ -31,6 +31,15 @@ def init_schema() -> None:
     schema_path = Path(__file__).with_name("schema.sql")
     with get_db() as conn:
         conn.executescript(schema_path.read_text())
+    _migrate_schema()
+
+
+def _migrate_schema() -> None:
+    """Add columns introduced after initial deploy (non-destructive, idempotent)."""
+    with get_db() as conn:
+        server_cols = {row[1] for row in conn.execute("PRAGMA table_info(servers)").fetchall()}
+        if "loader_version" not in server_cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN loader_version TEXT")
 
 
 def fetch_server(server_id: int) -> sqlite3.Row | None:

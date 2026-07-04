@@ -307,7 +307,10 @@ Lists every server with its tunnels, DNS records, and live `runtime_status`.
       "slug": "survival-smp",
       "type": "paper",
       "version": "1.21.4",
+      "loader_version": null,
       "port": 25565,
+      "mem_min": 2,
+      "mem_max": 4,
       "status": "created",
       "runtime_status": "healthy",
       "created_at": "2026-07-01 12:00:00",
@@ -336,8 +339,8 @@ Lists every server with its tunnels, DNS records, and live `runtime_status`.
 
 #### `GET /api/servers/<id>`
 
-Full detail for one server, including `runtime_status`, `port`, `mem_min`, and `mem_max`
-(excludes the RCON password).
+Full detail for one server, including `runtime_status`, `port`, `mem_min`, `mem_max`,
+and `loader_version` (excludes the RCON password).
 
 Example response:
 
@@ -350,6 +353,7 @@ Example response:
     "slug": "servertestdev123",
     "type": "vanilla",
     "version": "1.21.4",
+    "loader_version": null,
     "port": 25567,
     "mem_min": 4,
     "mem_max": 16,
@@ -369,17 +373,27 @@ download/world generation happen inside the container afterward. Poll
 
 Request body:
 
-| Field          | Type   | Required | Default     | Notes                                                     |
-| -------------- | ------ | -------- | ----------- | --------------------------------------------------------- |
-| `name`         | string | yes      | —           | Display name; slugified for the subdomain and DNS name.   |
-| `type`         | string | no       | `paper`     | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`.   |
-| `version`      | string | no       | `1.21.4`    | Minecraft version string.                                 |
-| `port`         | int    | no       | `25565`     | Host port (1024–65535), must be unique across servers.    |
-| `mem_min`      | int    | no       | `2`         | Minimum JVM heap, GB.                                     |
-| `mem_max`      | int    | no       | `4`         | Maximum JVM heap, GB.                                     |
-| `subscription` | string | no       | env default | `premium` or `free` (PlayIT).                             |
-| `agent`        | string | no       | env default | PlayIT agent name.                                        |
-| `properties`   | object | no       | defaults    | Initial `server.properties` values to apply during setup. |
+| Field            | Type   | Required | Default       | Notes                                                     |
+| ---------------- | ------ | -------- | ------------- | --------------------------------------------------------- |
+| `name`           | string | yes      | —             | Display name; slugified for the subdomain and DNS name.   |
+| `type`           | string | no       | `paper`       | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`.   |
+| `version`        | string | no       | `1.21.4`      | Minecraft version string.                                 |
+| `loader_version` | string | no       | image default | Loader/software version. See table below.                 |
+| `port`           | int    | no       | `25565`       | Host port (1024–65535), must be unique across servers.    |
+| `mem_min`        | int    | no       | `2`           | Minimum JVM heap, GB.                                     |
+| `mem_max`        | int    | no       | `4`           | Maximum JVM heap, GB.                                     |
+| `subscription`   | string | no       | env default   | `premium` or `free` (PlayIT).                             |
+| `agent`          | string | no       | env default   | PlayIT agent name.                                        |
+| `properties`     | object | no       | defaults      | Initial `server.properties` values to apply during setup. |
+
+`loader_version` values by server type:
+
+| Type     | Valid values                                                      |
+| -------- | ----------------------------------------------------------------- |
+| `forge`  | `"RECOMMENDED"` (default) · `"LATEST"` · specific e.g. `"47.3.0"` |
+| `fabric` | specific e.g. `"0.15.11"` · omit / `null` for latest              |
+| `quilt`  | specific version · omit / `null` for latest                       |
+| others   | not used — ignored if provided                                    |
 
 Response `201`:
 
@@ -501,6 +515,38 @@ warning that any existing PlayIT tunnel still points at the old port — call
 
 Body: `{"mem_min": 2, "mem_max": 4}` (GB). Updates the DB then recreates the container with
 new `INIT_MEMORY`/`MAX_MEMORY` values.
+
+#### `PATCH /api/servers/<id>/version`
+
+Changes the Minecraft version and/or loader version, then **recreates the container**.
+World data is preserved on the bind-mounted volume.
+
+Body fields (at least one required):
+
+| Field            | Type           | Notes                                                       |
+| ---------------- | -------------- | --------------------------------------------------git--------- |
+| `version`        | string         | New Minecraft version, e.g. `"1.21.4"`.                     |
+| `loader_version` | string \| null | New loader version. `null` clears it (image picks default). |
+
+Examples:
+
+```json
+{ "version": "1.21.4" }
+{ "loader_version": "47.3.0" }
+{ "version": "1.21.1", "loader_version": "RECOMMENDED" }
+{ "loader_version": null }
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Version updated, container recreated. Allow a few minutes for download.",
+  "version": "1.21.1",
+  "loader_version": "RECOMMENDED"
+}
+```
 
 ---
 

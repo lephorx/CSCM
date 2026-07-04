@@ -122,6 +122,7 @@ def create_server():
     port    = body.get("port", 25565)
     mem_min = body.get("mem_min", 2)
     mem_max = body.get("mem_max", 4)
+    loader_version   = body.get("loader_version")  # None = image default
     subscription = body.get("subscription")
     agent = body.get("agent")
     initial_properties = body.get("properties")
@@ -147,6 +148,7 @@ def create_server():
         server_name=name,
         server_type=server_type,
         version=version,
+        loader_version=loader_version,
         server_port=port,
         mem_min=mem_min,
         mem_max=mem_max,
@@ -462,4 +464,62 @@ def update_server_ram(server_id: int):
         "message": f"RAM updated: {mem_min}GB min, {mem_max}GB max. Container recreated.",
         "mem_min": mem_min,
         "mem_max": mem_max,
+    }), 200
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/version
+# Body: { "version": "1.21.4", "loader_version": "RECOMMENDED" }
+# ---------------------------------------------------------------------------
+@servers_bp.route("/servers/<int:server_id>/version", methods=["PATCH"])
+def update_server_version(server_id: int):
+    """Change the Minecraft version and/or loader version. Recreates the container.
+
+    loader_version values by type:
+      forge   — "RECOMMENDED" | "LATEST" | specific e.g. "47.3.0"
+      fabric  — specific e.g. "0.15.11", or omit/null for latest
+      quilt   — specific version, or omit/null for latest
+    """
+    auth_err = authorize()
+    if auth_err:
+        return auth_err
+
+    body = request.get_json(silent=True) or {}
+    new_version       = body.get("version")
+    has_loader        = "loader_version" in body
+    new_loader        = body.get("loader_version")  # may be null to clear
+
+    if not new_version and not has_loader:
+        return jsonify({"success": False, "message": "At least 'version' or 'loader_version' is required"}), 400
+
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
+    if not row:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    updates = {}
+    if new_version:
+        updates["version"] = str(new_version).strip()
+    if has_loader:
+        updates["loader_version"] = str(new_loader).strip() if new_loader else None
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values     = list(updates.values()) + [server_id]
+
+    with get_db() as conn:
+        conn.execute(f"UPDATE servers SET {set_clause} WHERE id = ?", values)
+        updated_row = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
+
+    try:
+        docker_manager.recreate_server(updated_row)
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Version updated in DB but container recreate failed: {exc}"}), 500
+
+    log.info("Server version updated: server_id=%d version=%s loader_version=%s",
+             server_id, updated_row["version"], dict(updated_row).get("loader_version"))
+    return jsonify({
+        "success":        True,
+        "message":        "Version updated, container recreated. Allow a few minutes for download.",
+        "version":        updated_row["version"],
+        "loader_version": dict(updated_row).get("loader_version"),
     }), 200

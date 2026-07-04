@@ -105,19 +105,29 @@ def create_server_container(row) -> str:
     os.makedirs(server_data_dir(server_id), exist_ok=True)
 
     client = _get_client()
+    env = {
+        "EULA": "TRUE",
+        "TYPE": itzg_type,
+        "VERSION": row["version"],
+        "INIT_MEMORY": f"{row['mem_min_gb']}G",
+        "MAX_MEMORY": f"{row['mem_max_gb']}G",
+        "ENABLE_RCON": "true",
+        "RCON_PASSWORD": row["rcon_password"],
+    }
+    loader_version = dict(row).get("loader_version") or None
+    if loader_version:
+        stype = row["type"].lower()
+        if stype == "forge":
+            env["FORGEVERSION"] = loader_version
+        elif stype == "fabric":
+            env["FABRIC_LOADER_VERSION"] = loader_version
+        elif stype == "quilt":
+            env["QUILT_LOADER_VERSION"] = loader_version
     container = client.containers.run(
         MC_IMAGE,
         name=container_name(server_id),
         detach=True,
-        environment={
-            "EULA": "TRUE",
-            "TYPE": itzg_type,
-            "VERSION": row["version"],
-            "INIT_MEMORY": f"{row['mem_min_gb']}G",
-            "MAX_MEMORY": f"{row['mem_max_gb']}G",
-            "ENABLE_RCON": "true",
-            "RCON_PASSWORD": row["rcon_password"],
-        },
+        environment=env,
         ports={"25565/tcp": row["serverport"]},
         volumes={_host_bind_path(server_id): {"bind": "/data", "mode": "rw"}},
         restart_policy={"Name": "unless-stopped"},

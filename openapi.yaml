@@ -208,6 +208,15 @@ paths:
                 mem_max: { type: integer, default: 4 }
                 subscription: { type: string, enum: [premium, free] }
                 agent: { type: string }
+                loader_version:
+                  type: string
+                  nullable: true
+                  description: |
+                    Loader/software version. Values by type:
+                    forge — "RECOMMENDED" | "LATEST" | specific e.g. "47.3.0"
+                    fabric — specific e.g. "0.15.11", omit for latest
+                    quilt — specific version, omit for latest
+                    paper/vanilla/purpur — not used
                 properties:
                   type: object
                   additionalProperties: { type: string }
@@ -367,6 +376,32 @@ paths:
                 mem_max: { type: integer }
       responses:
         { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/version:
+    patch:
+      tags: [Modification]
+      summary: Change Minecraft version and/or loader version (recreates the container)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string, example: "1.21.4" }
+                loader_version:
+                  type: string
+                  nullable: true
+                  description: |
+                    forge: RECOMMENDED | LATEST | specific e.g. 47.3.0
+                    fabric: specific e.g. 0.15.11, or null for latest
+                    quilt: specific version, or null for latest
+      responses:
+        "200": { description: OK }
+        "400": { description: Nothing to update }
+        "404": { description: Not found }
+        "500": { description: Container recreate failed }
 
   /api/servers/{id}/properties:
     get:
