@@ -988,7 +988,7 @@ function PlayerDetailDialog({
                     variant="ghost"
                     className="h-6 px-2 text-xs"
                     disabled={statsLoading}
-                    onClick={loadStats}
+                    onClick={() => loadStats()}
                   >
                     {statsLoading ? (
                       <Loader2 className="size-3 animate-spin" />
