@@ -347,6 +347,18 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ mem_min, mem_max }),
       }),
+    changeVersion: (
+      id: number,
+      version?: string,
+      loader_version?: string | null
+    ) =>
+      apiCall(`/servers/${id}/version`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...(version ? { version } : {}),
+          ...(loader_version !== undefined ? { loader_version } : {}),
+        }),
+      }),
     command: (id: number, command: string) =>
       apiCall(`/servers/${id}/command`, {
         method: "POST",

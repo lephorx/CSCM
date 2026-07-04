@@ -85,6 +85,7 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
     port: "25565",
     mem_min: "2",
     mem_max: "4",
+    loader_version: "",
   })
 
   const [errors, setErrors] = useState<Partial<typeof form>>({})
@@ -197,6 +198,9 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
         port: parseInt(form.port, 10),
         mem_min: parseInt(form.mem_min, 10),
         mem_max: parseInt(form.mem_max, 10),
+        ...(form.loader_version.trim()
+          ? { loader_version: form.loader_version.trim() }
+          : {}),
         ...(Object.keys(propsObj).length > 0 ? { properties: propsObj } : {}),
       }
 
@@ -211,6 +215,7 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
         port: "25565",
         mem_min: "2",
         mem_max: "4",
+        loader_version: "",
       })
       setErrors({})
       setPortStatus("idle")
@@ -289,6 +294,27 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
               <p className="text-xs text-destructive">{errors.version}</p>
             )}
           </div>
+
+          {/* Loader Version — forge/fabric/quilt only */}
+          {["forge", "fabric", "quilt"].includes(form.type) && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="srv-loader-ver">Loader Version</Label>
+                <span className="text-xs text-muted-foreground">
+                  {form.type === "forge"
+                    ? "RECOMMENDED · LATEST · 47.3.0…"
+                    : "leave empty for latest"}
+                </span>
+              </div>
+              <Input
+                id="srv-loader-ver"
+                placeholder={form.type === "forge" ? "RECOMMENDED" : "0.15.11"}
+                value={form.loader_version}
+                onChange={(e) => handleChange("loader_version", e.target.value)}
+                disabled={loading}
+              />
+            </div>
+          )}
 
           {/* Port */}
           <div className="space-y-1.5">

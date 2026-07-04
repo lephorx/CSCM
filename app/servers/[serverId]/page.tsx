@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { VersionPicker } from "@/components/VersionPicker"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
 import { normalizeServer } from "@/lib/utils"
@@ -67,13 +68,15 @@ export default function ServerDetailPage() {
   const [renaming, setRenaming] = useState(false)
 
   // Settings edit state
-  type EditField = "name" | "port" | "ram" | null
+  type EditField = "name" | "port" | "ram" | "version" | null
   const [editField, setEditField] = useState<EditField>(null)
   const [editValues, setEditValues] = useState({
     name: "",
     port: "",
     mem_min: "",
     mem_max: "",
+    version: "",
+    loader_version: "",
   })
   const [editSaving, setEditSaving] = useState(false)
   const [portError, setPortError] = useState("")
@@ -214,7 +217,7 @@ export default function ServerDetailPage() {
     }
   }
 
-  function openEdit(field: "name" | "port" | "ram") {
+  function openEdit(field: "name" | "port" | "ram" | "version") {
     if (!server) return
     setPortError("")
     if (field === "name") setEditValues((v) => ({ ...v, name: server.name }))
@@ -225,6 +228,12 @@ export default function ServerDetailPage() {
         ...v,
         mem_min: String(server.mem_min ?? 2),
         mem_max: String(server.mem_max ?? 4),
+      }))
+    if (field === "version")
+      setEditValues((v) => ({
+        ...v,
+        version: server.version,
+        loader_version: server.loader_version ?? "",
       }))
     setEditField(field)
   }
@@ -259,6 +268,15 @@ export default function ServerDetailPage() {
         }
         await api.control.changeRam(serverId, min, max)
         toast.success("RAM updated")
+      } else if (editField === "version") {
+        const version = editValues.version.trim()
+        if (!version) {
+          toast.error("Version cannot be empty")
+          return
+        }
+        const loader_version = editValues.loader_version.trim() || null
+        await api.control.changeVersion(serverId, version, loader_version)
+        toast.success("Version updated — server is being recreated")
       }
       setEditField(null)
       await refreshServerMeta()
@@ -314,7 +332,9 @@ export default function ServerDetailPage() {
             </Link>
             <h1 className="text-xl font-semibold">{server.name}</h1>
             <p className="text-xs text-muted-foreground capitalize">
-              {server.type} · {server.version} · :{server.port}
+              {server.type} · {server.version}
+              {server.loader_version ? ` / ${server.loader_version}` : ""} · :
+              {server.port}
             </p>
           </div>
 
@@ -481,6 +501,15 @@ export default function ServerDetailPage() {
                   field: "name" as const,
                 },
                 {
+                  label: "Version",
+                  value:
+                    server.version +
+                    (server.loader_version
+                      ? ` / ${server.loader_version}`
+                      : ""),
+                  field: "version" as const,
+                },
+                {
                   label: "Port",
                   value: server.port != null ? String(server.port) : "—",
                   field: "port" as const,
@@ -635,10 +664,52 @@ export default function ServerDetailPage() {
                 ? "Rename Server"
                 : editField === "port"
                   ? "Change Port"
-                  : "Change RAM"}
+                  : editField === "version"
+                    ? "Change Version"
+                    : "Change RAM"}
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleEditSave} className="space-y-4 pt-1">
+            {editField === "version" && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Minecraft Version</Label>
+                  <VersionPicker
+                    value={editValues.version}
+                    onChange={(v) =>
+                      setEditValues((prev) => ({ ...prev, version: v }))
+                    }
+                    disabled={editSaving}
+                  />
+                </div>
+                {["forge", "fabric", "quilt"].includes(server.type) && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="edit-loader-ver">Loader Version</Label>
+                      <span className="text-[10px] text-muted-foreground">
+                        {server.type === "forge"
+                          ? "RECOMMENDED · LATEST · 47.3.0…"
+                          : "empty = latest"}
+                      </span>
+                    </div>
+                    <Input
+                      id="edit-loader-ver"
+                      placeholder={
+                        server.type === "forge" ? "RECOMMENDED" : "0.15.11"
+                      }
+                      value={editValues.loader_version}
+                      onChange={(e) =>
+                        setEditValues((v) => ({
+                          ...v,
+                          loader_version: e.target.value,
+                        }))
+                      }
+                      disabled={editSaving}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             {editField === "name" && (
               <div className="space-y-1.5">
                 <Label htmlFor="edit-name">Server Name</Label>

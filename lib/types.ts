@@ -67,6 +67,7 @@ export interface CreateServerPayload {
   name: string
   type?: string
   version?: string
+  loader_version?: string | null
   port?: number
   mem_min?: number
   mem_max?: number
