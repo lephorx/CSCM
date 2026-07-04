@@ -393,7 +393,7 @@ function PropInput({
 // ── Main component ────────────────────────────────────────────────────────────
 
 interface Props {
-  user: { username: string } | null
+  user: { id: number; username: string } | null
   onLogout: () => void
   onClose: () => void
 }
