@@ -1,7 +1,12 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { useParams, notFound } from "next/navigation"
+import {
+  useParams,
+  useRouter,
+  useSearchParams,
+  notFound,
+} from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft, Loader2, Globe, Pencil, Settings2 } from "lucide-react"
 import { toast } from "sonner"
@@ -10,6 +15,9 @@ import { TopNav } from "@/components/TopNav"
 import { Console } from "@/components/Console"
 import { FileExplorer } from "@/components/FileExplorer"
 import { ServerStats } from "@/components/ServerStats"
+import { PropertiesPanel } from "@/components/PropertiesPanel"
+import { PlayersPanel } from "@/components/PlayersPanel"
+import { BackupsPanel } from "@/components/BackupsPanel"
 import { AuthPage } from "@/components/AuthPage"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -24,6 +32,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
+import { normalizeServer } from "@/lib/utils"
 import type { Server, ServerStats as Stats } from "@/lib/types"
 
 const POLL_INTERVAL = 5000
@@ -68,6 +77,29 @@ export default function ServerDetailPage() {
   })
   const [editSaving, setEditSaving] = useState(false)
   const [portError, setPortError] = useState("")
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const VALID_TABS = [
+    "console",
+    "files",
+    "stats",
+    "players",
+    "properties",
+    "backups",
+    "settings",
+  ] as const
+  type Tab = (typeof VALID_TABS)[number]
+  const rawTab = searchParams.get("tab") ?? ""
+  const activeTab: Tab = (VALID_TABS as readonly string[]).includes(rawTab)
+    ? (rawTab as Tab)
+    : "console"
+
+  function setTab(tab: Tab) {
+    const params = new URLSearchParams(searchParams.toString())
+    params.set("tab", tab)
+    router.replace(`?${params.toString()}`, { scroll: false })
+  }
+
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchStats = useCallback(async () => {
@@ -82,14 +114,13 @@ export default function ServerDetailPage() {
   useEffect(() => {
     if (isNaN(serverId) || !authenticated) return
 
-    // Load server list to get this server's metadata
+    // Load this server's metadata
     api.servers
-      .list()
+      .get(serverId)
       .then((res) => {
-        const list: Server[] = res?.servers ?? res?.data ?? res ?? []
-        const found = list.find((s) => s.id === serverId)
+        const found: Server | undefined = res?.server ?? res?.data ?? res
         if (!found) return notFound()
-        setServer(found)
+        setServer(normalizeServer(found))
       })
       .catch(() => toast.error("Failed to load server"))
       .finally(() => setLoadingServer(false))
@@ -144,10 +175,9 @@ export default function ServerDetailPage() {
   }
 
   async function refreshServerMeta() {
-    const res = await api.servers.list()
-    const list: Server[] = res?.servers ?? res?.data ?? res ?? []
-    const found = list.find((s) => s.id === serverId)
-    if (found) setServer(found)
+    const res = await api.servers.get(serverId)
+    const found: Server | undefined = res?.server ?? res?.data ?? res
+    if (found) setServer(normalizeServer(found))
   }
 
   async function handleSetupTunnel() {
@@ -189,9 +219,13 @@ export default function ServerDetailPage() {
     setPortError("")
     if (field === "name") setEditValues((v) => ({ ...v, name: server.name }))
     if (field === "port")
-      setEditValues((v) => ({ ...v, port: String(server.port) }))
+      setEditValues((v) => ({ ...v, port: String(server.port ?? "") }))
     if (field === "ram")
-      setEditValues((v) => ({ ...v, mem_min: "1", mem_max: "2" }))
+      setEditValues((v) => ({
+        ...v,
+        mem_min: String(server.mem_min ?? 2),
+        mem_max: String(server.mem_max ?? 4),
+      }))
     setEditField(field)
   }
 
@@ -367,33 +401,14 @@ export default function ServerDetailPage() {
               Rename
             </Button>
           </div>
-        ) : (
-          <div className="mb-6 flex items-center justify-between border border-border bg-muted/40 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium">No tunnel configured</p>
-              <p className="text-xs text-muted-foreground">
-                Players cannot connect externally yet. Set up a tunnel to create
-                public DNS records.
-              </p>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={tunneling}
-              onClick={handleSetupTunnel}
-            >
-              {tunneling ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <Globe className="size-3.5" />
-              )}
-              {tunneling ? "Setting up…" : "Setup Tunnel"}
-            </Button>
-          </div>
-        )}
+        ) : null}
 
         {/* Tabs */}
-        <Tabs defaultValue="console" className="flex flex-col gap-0">
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setTab(v as Tab)}
+          className="flex flex-col gap-0"
+        >
           <TabsList
             variant="line"
             className="mb-0 w-full justify-start border-b border-border pb-0"
@@ -401,6 +416,9 @@ export default function ServerDetailPage() {
             <TabsTrigger value="console">Console</TabsTrigger>
             <TabsTrigger value="files">Files</TabsTrigger>
             <TabsTrigger value="stats">Stats</TabsTrigger>
+            <TabsTrigger value="players">Players</TabsTrigger>
+            <TabsTrigger value="properties">Properties</TabsTrigger>
+            <TabsTrigger value="backups">Backups</TabsTrigger>
             <TabsTrigger value="settings">
               <Settings2 className="size-3.5" />
               Settings
@@ -410,7 +428,6 @@ export default function ServerDetailPage() {
           <TabsContent
             value="console"
             className="mt-0 border border-t-0 border-border"
-            style={{ minHeight: "480px" }}
           >
             <Console serverId={serverId} isRunning={isRunning} />
           </TabsContent>
@@ -427,7 +444,29 @@ export default function ServerDetailPage() {
             value="stats"
             className="mt-0 border border-t-0 border-border"
           >
-            <ServerStats serverId={serverId} />
+            <ServerStats stats={stats} loading={loadingServer} />
+          </TabsContent>
+
+          <TabsContent
+            value="players"
+            className="mt-0 border border-t-0 border-border"
+          >
+            <PlayersPanel serverId={serverId} isRunning={isRunning} />
+          </TabsContent>
+
+          <TabsContent
+            value="properties"
+            className="mt-0 border border-t-0 border-border"
+            style={{ minHeight: "480px" }}
+          >
+            <PropertiesPanel serverId={serverId} />
+          </TabsContent>
+
+          <TabsContent
+            value="backups"
+            className="mt-0 border border-t-0 border-border"
+          >
+            <BackupsPanel serverId={serverId} />
           </TabsContent>
 
           <TabsContent
@@ -443,12 +482,15 @@ export default function ServerDetailPage() {
                 },
                 {
                   label: "Port",
-                  value: String(server.port),
+                  value: server.port != null ? String(server.port) : "—",
                   field: "port" as const,
                 },
                 {
                   label: "RAM",
-                  value: "Edit min/max heap",
+                  value:
+                    server.mem_min != null && server.mem_max != null
+                      ? `${server.mem_min} GB / ${server.mem_max} GB`
+                      : "Edit min/max heap",
                   field: "ram" as const,
                 },
               ].map(({ label, value, field }) => (

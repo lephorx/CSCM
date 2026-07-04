@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog"
 import type { Server, ServerStats } from "@/lib/types"
 import { api } from "@/lib/api"
+import { parsePlayersRaw } from "@/lib/utils"
 
 interface Props {
   server: Server
@@ -95,7 +96,13 @@ export function ServerCard({ server, stats, onRefresh }: Props) {
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
             <Users className="size-3" />
-            {isRunning && stats ? `${stats.online}/${stats.max}` : "—"} players
+            {isRunning && stats
+              ? (() => {
+                  const { online, max } = parsePlayersRaw(stats.players_raw)
+                  return `${online}/${max ?? "—"}`
+                })()
+              : "—"}{" "}
+            players
           </span>
           <span className="flex items-center gap-1">
             <Network className="size-3" />:{server.port}

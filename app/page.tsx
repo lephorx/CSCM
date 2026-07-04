@@ -1,15 +1,17 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Plus, Loader2, ServerOff } from "lucide-react"
+import { Plus, Loader2, ServerOff, Settings2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { DefaultsEditor } from "@/components/DefaultsEditor"
 import { TopNav } from "@/components/TopNav"
 import { ServerCard } from "@/components/ServerCard"
 import { ServerCreateModal } from "@/components/ServerCreateModal"
 import { AuthPage } from "@/components/AuthPage"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
+import { normalizeServer } from "@/lib/utils"
 import type { Server, ServerStats } from "@/lib/types"
 
 const POLL_INTERVAL = 5000
@@ -29,12 +31,15 @@ export default function DashboardPage() {
   const [statsMap, setStatsMap] = useState<Record<number, ServerStats>>({})
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
+  const [defaultsOpen, setDefaultsOpen] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchServers = useCallback(async () => {
     try {
       const res = await api.servers.list()
-      const list: Server[] = res?.servers ?? res?.data ?? res ?? []
+      const list: Server[] = (res?.servers ?? res?.data ?? res ?? []).map(
+        normalizeServer
+      )
       setServers(list)
       // fetch stats in parallel
       const statsEntries = await Promise.allSettled(
@@ -88,6 +93,16 @@ export default function DashboardPage() {
     )
   }
 
+  if (defaultsOpen) {
+    return (
+      <DefaultsEditor
+        user={user}
+        onLogout={logout}
+        onClose={() => setDefaultsOpen(false)}
+      />
+    )
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <TopNav user={user} onLogout={logout} />
@@ -103,10 +118,16 @@ export default function DashboardPage() {
                 : `${servers.length} server${servers.length !== 1 ? "s" : ""}`}
             </p>
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4" />
-            New Server
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setDefaultsOpen(true)}>
+              <Settings2 className="size-4" />
+              Defaults
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="size-4" />
+              New Server
+            </Button>
+          </div>
         </div>
 
         {/* Server grid */}

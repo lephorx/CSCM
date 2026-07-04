@@ -1,7 +1,14 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { Loader2, Plus, CheckCircle2, XCircle } from "lucide-react"
+import {
+  Loader2,
+  Plus,
+  CheckCircle2,
+  XCircle,
+  X,
+  ChevronDown,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -24,17 +31,6 @@ import {
 import { api } from "@/lib/api"
 import type { Server } from "@/lib/types"
 import { VersionPicker } from "@/components/VersionPicker"
-
-const RAM_OPTIONS = [
-  { label: "No limit", value: "none" },
-  { label: "512 MB", value: "512M" },
-  { label: "1 GB", value: "1G" },
-  { label: "2 GB", value: "2G" },
-  { label: "4 GB", value: "4G" },
-  { label: "8 GB", value: "8G" },
-  { label: "16 GB", value: "16G" },
-  { label: "32 GB", value: "32G" },
-]
 
 const PORT_MIN = 1024
 const PORT_MAX = 65535
@@ -85,13 +81,15 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
   const [form, setForm] = useState({
     name: "",
     type: "paper",
-    version: "1.20.1",
+    version: "1.21.4",
     port: "25565",
-    mem_min: "1G",
-    mem_max: "2G",
+    mem_min: "2",
+    mem_max: "4",
   })
 
   const [errors, setErrors] = useState<Partial<typeof form>>({})
+  const [props, setProps] = useState<{ key: string; value: string }[]>([])
+  const [showProps, setShowProps] = useState(false)
   const portDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Load server types and existing ports when modal opens
@@ -100,7 +98,7 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
     api
       .serverTypes()
       .then((res) => {
-        if (Array.isArray(res?.data)) setServerTypes(res.data)
+        if (Array.isArray(res?.server_types)) setServerTypes(res.server_types)
         else if (Array.isArray(res)) setServerTypes(res)
       })
       .catch(() => {})
@@ -110,6 +108,19 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
       .then((res) => {
         const list: Server[] = res?.servers ?? res?.data ?? res ?? []
         setUsedPorts(new Set(list.map((s) => s.port)))
+      })
+      .catch(() => {})
+
+    api.defaults
+      .getProperties()
+      .then((res) => {
+        const p: Record<string, string> = res?.properties ?? {}
+        setProps(
+          Object.entries(p).map(([key, value]) => ({
+            key,
+            value: String(value),
+          }))
+        )
       })
       .catch(() => {})
   }, [open])
@@ -154,6 +165,13 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
     if (BLOCKED_PORTS.has(port))
       next.port = "This port is reserved by the system"
     if (portStatus === "taken") next.port = "This port is already in use"
+
+    const memMin = parseInt(form.mem_min, 10)
+    const memMax = parseInt(form.mem_max, 10)
+    if (isNaN(memMin) || memMin < 1) next.mem_min = "Must be at least 1 GB"
+    if (isNaN(memMax) || memMax < memMin)
+      next.mem_max = "Max RAM must be ≥ min RAM"
+
     return next
   }
 
@@ -167,17 +185,19 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
 
     setLoading(true)
     try {
+      const propsObj: Record<string, string> = {}
+      for (const p of props) {
+        const k = p.key.trim()
+        if (k) propsObj[k] = p.value
+      }
       const payload: Parameters<typeof api.servers.create>[0] = {
         name: form.name.trim(),
         type: form.type,
         version: form.version.trim(),
         port: parseInt(form.port, 10),
-        ...(form.mem_min && form.mem_min !== "none"
-          ? { mem_min: form.mem_min }
-          : {}),
-        ...(form.mem_max && form.mem_max !== "none"
-          ? { mem_max: form.mem_max }
-          : {}),
+        mem_min: parseInt(form.mem_min, 10),
+        mem_max: parseInt(form.mem_max, 10),
+        ...(Object.keys(propsObj).length > 0 ? { properties: propsObj } : {}),
       }
 
       await api.servers.create(payload)
@@ -187,13 +207,15 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
       setForm({
         name: "",
         type: "paper",
-        version: "1.20.1",
+        version: "1.21.4",
         port: "25565",
-        mem_min: "1G",
-        mem_max: "2G",
+        mem_min: "2",
+        mem_max: "4",
       })
       setErrors({})
       setPortStatus("idle")
+      setProps([])
+      setShowProps(false)
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to create server"
@@ -209,7 +231,7 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Create Server</DialogTitle>
         </DialogHeader>
@@ -320,43 +342,115 @@ export function ServerCreateModal({ open, onOpenChange, onCreated }: Props) {
           {/* RAM */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="srv-memmin">Min RAM</Label>
-              <Select
+              <Label htmlFor="srv-memmin">Min RAM (GB)</Label>
+              <Input
+                id="srv-memmin"
+                type="number"
+                min={1}
                 value={form.mem_min}
-                onValueChange={(v) => handleChange("mem_min", v)}
+                onChange={(e) => handleChange("mem_min", e.target.value)}
                 disabled={loading}
-              >
-                <SelectTrigger id="srv-memmin" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RAM_OPTIONS.map((r) => (
-                    <SelectItem key={r.value} value={r.value}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                aria-invalid={!!errors.mem_min}
+              />
+              {errors.mem_min && (
+                <p className="text-xs text-destructive">{errors.mem_min}</p>
+              )}
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="srv-memmax">Max RAM</Label>
-              <Select
+              <Label htmlFor="srv-memmax">Max RAM (GB)</Label>
+              <Input
+                id="srv-memmax"
+                type="number"
+                min={1}
                 value={form.mem_max}
-                onValueChange={(v) => handleChange("mem_max", v)}
+                onChange={(e) => handleChange("mem_max", e.target.value)}
                 disabled={loading}
-              >
-                <SelectTrigger id="srv-memmax" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {RAM_OPTIONS.map((r) => (
-                    <SelectItem key={r.value} value={r.value}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                aria-invalid={!!errors.mem_max}
+              />
+              {errors.mem_max && (
+                <p className="text-xs text-destructive">{errors.mem_max}</p>
+              )}
             </div>
+          </div>
+
+          {/* Initial Properties (collapsible) */}
+          <div className="space-y-1.5">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+              onClick={() => setShowProps((s) => !s)}
+            >
+              <span>Initial Properties</span>
+              {props.length > 0 && (
+                <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                  {props.length}
+                </span>
+              )}
+              <ChevronDown
+                className={`ml-auto size-3.5 transition-transform ${
+                  showProps ? "rotate-180" : ""
+                }`}
+              />
+            </button>
+            {showProps && (
+              <div className="space-y-1.5">
+                {props.map((p, i) => (
+                  <div key={i} className="flex gap-1.5">
+                    <Input
+                      className="h-7 flex-1 font-mono text-xs"
+                      placeholder="key (e.g. motd)"
+                      value={p.key}
+                      onChange={(e) =>
+                        setProps((prev) =>
+                          prev.map((x, idx) =>
+                            idx === i ? { ...x, key: e.target.value } : x
+                          )
+                        )
+                      }
+                      disabled={loading}
+                    />
+                    <Input
+                      className="h-7 flex-1 text-xs"
+                      placeholder="value"
+                      value={p.value}
+                      onChange={(e) =>
+                        setProps((prev) =>
+                          prev.map((x, idx) =>
+                            idx === i ? { ...x, value: e.target.value } : x
+                          )
+                        )
+                      }
+                      disabled={loading}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+                      onClick={() =>
+                        setProps((prev) => prev.filter((_, idx) => idx !== i))
+                      }
+                      disabled={loading}
+                    >
+                      <X className="size-3" />
+                    </Button>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 w-full text-xs"
+                  onClick={() =>
+                    setProps((prev) => [...prev, { key: "", value: "" }])
+                  }
+                  disabled={loading}
+                >
+                  <Plus className="size-3" />
+                  Add Property
+                </Button>
+              </div>
+            )}
           </div>
 
           <DialogFooter className="gap-2 pt-2">

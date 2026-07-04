@@ -1,17 +1,27 @@
 import { type NextRequest, NextResponse } from "next/server"
 
 const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
-const BEARER_TOKEN = process.env.BEARER_TOKEN ?? ""
 
 async function proxy(req: NextRequest, segments: string[]) {
   const isAuthRoute = segments[0] === "auth"
+  // EventSource cannot set an Authorization header, so the console stream
+  // authenticates via a `?token=` query param instead.
+  const isConsoleStream = segments[segments.length - 1] === "stream"
 
-  // Non-auth routes require the user to have a JWT (real verification is on the backend)
-  if (!isAuthRoute) {
-    const authHeader = req.headers.get("authorization")
-    if (!authHeader?.startsWith("Bearer ")) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  const authHeader = req.headers.get("authorization")
+  const queryToken = req.nextUrl.searchParams.get("token")
+  // The JWT from login is the one and only credential CSCM understands —
+  // forward it as-is. The stream endpoint gets it via `?token=` instead of
+  // a header, since EventSource can't set custom headers.
+  const bearer = authHeader?.startsWith("Bearer ")
+    ? authHeader
+    : isConsoleStream && queryToken
+      ? `Bearer ${queryToken}`
+      : null
+
+  // Non-auth routes require the caller to have a JWT (real verification is on the backend)
+  if (!isAuthRoute && !bearer) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
   const path = segments.join("/")
@@ -24,15 +34,7 @@ async function proxy(req: NextRequest, segments: string[]) {
     ?.includes("multipart/form-data")
 
   const headers = new Headers()
-
-  // Auth routes forward the user's JWT so the backend can verify it.
-  // All other routes use the static API key so the backend accepts them.
-  if (isAuthRoute) {
-    const authHeader = req.headers.get("authorization")
-    if (authHeader) headers.set("Authorization", authHeader)
-  } else {
-    headers.set("Authorization", `Bearer ${BEARER_TOKEN}`)
-  }
+  if (bearer) headers.set("Authorization", bearer)
 
   if (!isFormData) {
     const ct = req.headers.get("content-type")
