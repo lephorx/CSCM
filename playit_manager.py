@@ -139,24 +139,8 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
             await asyncio.sleep(1)
 
             # Select agent
-            log.debug("Selecting agent: %s", selected_agent or "first available")
-            await page.click('div._15pr4g9v')
-            await asyncio.sleep(1)
-
-            if selected_agent:
-                # Search for agent by name
-                await page.evaluate(f"""
-                    () => {{
-                        const agents = Array.from(document.querySelectorAll('div._15pr4g9v'));
-                        const target = agents.find(el => el.textContent.includes('{selected_agent}'));
-                        if (target) target.click();
-                    }}
-                """)
-            else:
-                # Use first available agent
-                buttons = await page.query_selector_all('button.maeflab')
-                if buttons:
-                    await buttons[-1].click()
+            if not await _select_agent(page, selected_agent):
+                log.warning("Agent selection may have failed; continuing anyway")
             await asyncio.sleep(1)
 
             # Set local port
@@ -197,6 +181,127 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
     except Exception as exc:
         log.exception("Unexpected error during tunnel creation: %s", exc)
         return None
+
+
+async def _select_agent(page, agent_name: str | None) -> bool:
+    """Select a PlayIT agent during tunnel creation.
+
+    Tries four strategies in order and returns True when one succeeds.
+    Falls back to "first available" if the named agent cannot be found.
+
+    Strategies:
+      1. Playwright get_by_text — most reliable when text is accessible.
+      2. href-based anchor tag — stable because PlayIT agent links always
+         contain '/account/agents/' in their href.
+      3. JavaScript text-node walk — works when the element is not in the
+         Playwright accessibility tree but exists in the DOM.
+      4. First visible interactive element — last resort.
+    """
+    await asyncio.sleep(0.5)
+    log.debug("Selecting agent: %s", agent_name or "first available")
+
+    async def _try_name(name: str) -> bool:
+        # Strategy 1: Playwright locator by visible text
+        try:
+            locator = page.get_by_text(name, exact=False)
+            if await locator.count() > 0:
+                await locator.first.click(timeout=4000)
+                log.debug("Agent selected via get_by_text: %s", name)
+                return True
+        except Exception:
+            pass
+
+        # Strategy 2: anchor tag whose href references the agent
+        # (e.g. <a href="/account/agents/{uuid}">…<span>Agent name</span>…</a>)
+        try:
+            clicked = await page.evaluate(f"""
+                (name) => {{
+                    const anchors = Array.from(document.querySelectorAll('a[href*="/account/agents/"]'));
+                    const match = anchors.find(el => el.textContent.includes(name));
+                    if (match) {{ match.click(); return true; }}
+                    return false;
+                }}
+            """, name)
+            if clicked:
+                log.debug("Agent selected via href anchor: %s", name)
+                return True
+        except Exception:
+            pass
+
+        # Strategy 3: generic text-node walk for any clickable parent
+        try:
+            clicked = await page.evaluate(f"""
+                (name) => {{
+                    const walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_TEXT, null, false
+                    );
+                    let node;
+                    while ((node = walker.nextNode())) {{
+                        if (node.textContent.trim().includes(name)) {{
+                            let el = node.parentElement;
+                            for (let i = 0; i < 6 && el; i++) {{
+                                const tag = el.tagName;
+                                const role = el.getAttribute('role') || '';
+                                const cur = window.getComputedStyle(el).cursor;
+                                if (tag === 'BUTTON' || tag === 'A' ||
+                                    role === 'button' || cur === 'pointer') {{
+                                    el.click();
+                                    return true;
+                                }}
+                                el = el.parentElement;
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+            """, name)
+            if clicked:
+                log.debug("Agent selected via text-node walk: %s", name)
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    # --- Named agent path ---
+    if agent_name:
+        if await _try_name(agent_name):
+            return True
+        log.warning("Agent '%s' not found; trying first available instead", agent_name)
+
+    # --- First available path (also fallback for named) ---
+    # Strategy 4a: first anchor tag linking to an agent page
+    try:
+        first = await page.query_selector('a[href*="/account/agents/"]')
+        if first:
+            await first.click()
+            log.debug("Clicked first agent anchor (href strategy)")
+            return True
+    except Exception:
+        pass
+
+    # Strategy 4b: first visible interactive element on the step
+    try:
+        clicked = await page.evaluate("""
+            () => {
+                const els = Array.from(document.querySelectorAll(
+                    'button, a[href], [role="button"]'
+                ));
+                const candidate = els.find(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 80 && r.height > 30;
+                });
+                if (candidate) { candidate.click(); return true; }
+                return false;
+            }
+        """)
+        if clicked:
+            log.debug("Clicked first large interactive element as agent fallback")
+            return True
+    except Exception:
+        pass
+
+    return False
 
 
 async def _login(page) -> bool:
