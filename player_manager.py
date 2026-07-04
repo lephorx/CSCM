@@ -13,6 +13,7 @@ Requires the ``nbtlib`` package (pip install nbtlib).
 
 import json
 import re
+import time
 from pathlib import Path
 
 import docker_manager
@@ -377,8 +378,25 @@ def _looks_like_block_stat(stat_key: str) -> bool:
 
 # ── Player NBT data (read) ────────────────────────────────────────────────────
 
-def get_player_data(server_id: int, username: str) -> dict:
-    """Return health, food, XP, game mode, inventory and ender chest from the .dat file."""
+def flush_world_saves(server_id: int) -> None:
+    """Run save-all flush via RCON so playerdata files are current on disk."""
+    try:
+        docker_manager.send_rcon(server_id, "save-all flush")
+        time.sleep(0.5)  # brief wait for Minecraft to finish writing
+        log.debug("save-all flush completed for server_id=%d", server_id)
+    except Exception as exc:
+        log.debug("save-all flush failed for server_id=%d: %s", server_id, exc)
+
+
+def get_player_data(server_id: int, username: str, flush_first: bool = False) -> dict:
+    """Return health, food, XP, game mode, inventory and ender chest from the .dat file.
+
+    When ``flush_first`` is True and the server is running, issues a
+    ``save-all flush`` via RCON before reading so the disk file is current.
+    """
+    if flush_first and _is_running(server_id):
+        flush_world_saves(server_id)
+
     nbt_file, root, uuid, err = _nbt_open(server_id, username)
     if err:
         return {"success": False, "message": err}
@@ -394,8 +412,9 @@ def get_player_data(server_id: int, username: str) -> dict:
         "game_mode":       int(root.get("playerGameType",       nbtlib.Int(0))),
         "inventory":       [_item_to_dict(i) for i in root.get("Inventory",  nbtlib.List())],
         "enderchest":      [_item_to_dict(i) for i in root.get("EnderItems", nbtlib.List())],
+        "flushed":         flush_first and _is_running(server_id),
     }
-    if _is_running(server_id):
+    if _is_running(server_id) and not flush_first:
         result["warning"] = _running_warning()
     return result
 
@@ -614,7 +633,10 @@ def teleport_player(server_id: int, username: str, x: float, y: float, z: float)
 
 # ── Statistics ────────────────────────────────────────────────────────────────
 
-def get_player_statistics(server_id: int, username: str) -> dict:
+def get_player_statistics(server_id: int, username: str, flush_first: bool = False) -> dict:
+    if flush_first and _is_running(server_id):
+        flush_world_saves(server_id)
+
     uuid = _lookup_uuid(server_id, username)
     if not uuid:
         return {

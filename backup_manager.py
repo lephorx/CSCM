@@ -45,6 +45,10 @@ log = get_logger("backup_manager")
 
 BACKUPS_DIR = os.getenv("BACKUPS_DIR", "/data/backups")
 
+# Interval in seconds for the background save-all flush that keeps playerdata
+# files on disk current while players are online.  0 = disabled.
+PLAYER_DATA_FLUSH_INTERVAL = int(os.getenv("PLAYER_DATA_FLUSH_INTERVAL", "60"))
+
 # Optional: base ZFS dataset under which each server has its own child dataset.
 # Example: ZFS_DATASET_BASE=tank/cscm/servers  →  server 3 uses tank/cscm/servers/3
 ZFS_DATASET_BASE = os.getenv("ZFS_DATASET_BASE", "").rstrip("/")
@@ -390,6 +394,27 @@ def _run_scheduled_backup(server_id: int, retention: int, backup_type: str) -> N
         log.error("Scheduled backup failed server_id=%d: %s", server_id, exc)
 
 
+def _run_periodic_save_all() -> None:
+    """Call save-all flush on every healthy running server.
+
+    Keeps world/playerdata/<uuid>.dat and world/stats/<uuid>.json files
+    up to date on disk so API reads return current data.
+    """
+    try:
+        with get_db() as conn:
+            rows = conn.execute("SELECT id FROM servers WHERE status = 'created'").fetchall()
+        for row in rows:
+            sid = row["id"]
+            if docker_manager.runtime_status(sid) in ("healthy", "running"):
+                try:
+                    docker_manager.send_rcon(sid, "save-all flush")
+                    log.debug("Periodic save-all flush: server_id=%d", sid)
+                except Exception as exc:
+                    log.debug("Periodic flush failed for server_id=%d: %s", sid, exc)
+    except Exception as exc:
+        log.error("Periodic save-all task error: %s", exc)
+
+
 def init_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
@@ -404,7 +429,21 @@ def init_scheduler() -> None:
         ).fetchall()
     for s in schedules:
         _add_job(s["server_id"], s["cron"], s["retention"], s["backup_type"] or BACKUP_TYPE_ZIP)
-    log.info("Backup scheduler started with %d active schedule(s)", len(schedules))
+
+    if PLAYER_DATA_FLUSH_INTERVAL > 0:
+        _scheduler.add_job(
+            _run_periodic_save_all,
+            "interval",
+            seconds=PLAYER_DATA_FLUSH_INTERVAL,
+            id="periodic-save-all",
+            replace_existing=True,
+        )
+        log.info(
+            "Backup scheduler started with %d active schedule(s); periodic save-all every %ds",
+            len(schedules), PLAYER_DATA_FLUSH_INTERVAL,
+        )
+    else:
+        log.info("Backup scheduler started with %d active schedule(s)", len(schedules))
 
 
 def _add_job(server_id: int, cron: str, retention: int, backup_type: str) -> None:

@@ -180,14 +180,19 @@ def player_history(server_id: int):
 
 @players_bp.route("/servers/<int:server_id>/players/<string:username>/data", methods=["GET"])
 def get_player_data(server_id: int, username: str):
-    """Health, food, XP, game mode, inventory, and ender chest from the player's .dat file."""
+    """Health, food, XP, game mode, inventory, and ender chest from the player's .dat file.
+
+    Add ``?refresh=true`` to flush the server's world saves via RCON before
+    reading, so the returned data is always current while the player is online.
+    """
     auth_err = authorize()
     if auth_err:
         return auth_err
     err = _require_server(server_id)
     if err:
         return err
-    result = player_manager.get_player_data(server_id, username)
+    flush_first = request.args.get("refresh", "").lower() == "true"
+    result = player_manager.get_player_data(server_id, username, flush_first=flush_first)
     return jsonify(result), 200 if result["success"] else 404
 
 
@@ -387,7 +392,8 @@ def player_statistics(server_id: int, username: str):
     err = _require_server(server_id)
     if err:
         return err
-    result = player_manager.get_player_statistics(server_id, username)
+    flush_first = request.args.get("refresh", "").lower() == "true"
+    result = player_manager.get_player_statistics(server_id, username, flush_first=flush_first)
     return jsonify(result), 200 if result["success"] else 404
 
 
