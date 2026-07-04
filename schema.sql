@@ -39,17 +39,19 @@ CREATE TABLE IF NOT EXISTS dns_records (
 );
 
 CREATE TABLE IF NOT EXISTS backups (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    server_id  INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-    filename   TEXT NOT NULL,
-    size_bytes INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    kind       TEXT NOT NULL DEFAULT 'manual'
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id   INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    filename    TEXT NOT NULL,
+    size_bytes  INTEGER,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    kind        TEXT NOT NULL DEFAULT 'manual',
+    backup_type TEXT NOT NULL DEFAULT 'zip'
 );
 
 CREATE TABLE IF NOT EXISTS backup_schedules (
-    server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
-    cron      TEXT NOT NULL,
-    retention INTEGER NOT NULL DEFAULT 5,
-    enabled   INTEGER NOT NULL DEFAULT 1
+    server_id   INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+    cron        TEXT NOT NULL,
+    retention   INTEGER NOT NULL DEFAULT 5,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    backup_type TEXT NOT NULL DEFAULT 'zip'
 );

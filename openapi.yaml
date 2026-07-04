@@ -621,13 +621,19 @@ paths:
       responses: { "200": { description: OK } }
     post:
       tags: [Backups]
-      summary: Create a manual backup
+      summary: Create a manual backup (zip, copy, or zfs)
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string, enum: [zip, copy, zfs], default: zip }
       responses:
-        {
-          "201": { description: Created },
-          "500": { description: Backup failed },
-        }
+        "201": { description: Created }
+        "400": { description: Unknown backup type }
+        "500": { description: Backup failed }
 
   /api/servers/{id}/backups/{backup_id}:
     delete:
@@ -637,6 +643,21 @@ paths:
         - { $ref: "#/components/parameters/BackupId" }
       responses:
         { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/backups/{backup_id}/download:
+    get:
+      tags: [Backups]
+      summary: Download a backup archive as a zip file
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - { $ref: "#/components/parameters/BackupId" }
+      responses:
+        "200":
+          description: zip file attachment
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "404": { description: Not found }
 
   /api/servers/{id}/backups/{backup_id}/restore:
     post:
@@ -666,6 +687,7 @@ paths:
                 cron: { type: string, example: "0 4 * * *" }
                 retention: { type: integer, default: 5 }
                 enabled: { type: boolean, default: true }
+                type: { type: string, enum: [zip, copy, zfs], default: zip }
       responses:
         { "200": { description: OK }, "400": { description: Invalid cron } }
     delete:

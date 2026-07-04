@@ -836,15 +836,32 @@ disk-based edits on disconnect.
 
 ### Backups
 
-| Method   | Path                                            | Body                                                     | Notes                                                                 |
-| -------- | ----------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
-| `GET`    | `/api/servers/<id>/backups`                     | —                                                        | List backups, newest first.                                           |
-| `POST`   | `/api/servers/<id>/backups`                     | —                                                        | Create a manual backup now (flushes the world via RCON if running).   |
-| `DELETE` | `/api/servers/<id>/backups/<backup_id>`         | —                                                        | Delete a backup archive and its record.                               |
-| `POST`   | `/api/servers/<id>/backups/<backup_id>/restore` | —                                                        | Stops the server, wipes the data dir, extracts the archive, restarts. |
-| `GET`    | `/api/servers/<id>/backups/schedule`            | —                                                        | Returns `{cron, retention, enabled}` or `{"schedule": null}`.         |
-| `PUT`    | `/api/servers/<id>/backups/schedule`            | `{"cron": "0 4 * * *", "retention": 5, "enabled": true}` | Create/update a scheduled backup. 5-field crontab syntax.             |
-| `DELETE` | `/api/servers/<id>/backups/schedule`            | —                                                        | Remove the schedule.                                                  |
+Three backup types are supported. Specify `{"type": "..."}` in the request body.
+
+| Type   | Description                                                                          | Speed   | Disk use  | Download                   |
+| ------ | ------------------------------------------------------------------------------------ | ------- | --------- | -------------------------- |
+| `zip`  | Compressed archive stored in `BACKUPS_DIR`. Default.                                 | Slow    | Low       | ✓                          |
+| `copy` | Plain directory copy in `BACKUPS_DIR`. No compression.                               | Fast    | High      | ✓ (zipped on-the-fly)      |
+| `zfs`  | Instant ZFS snapshot of the server’s dataset. Requires `ZFS_DATASET_BASE` to be set. | Instant | Near-zero | ✘ (use `zfs send` on host) |
+
+#### ZFS requirements
+
+1. Set `ZFS_DATASET_BASE=tank/cscm/servers` in `.env` — each server must have its own child dataset (e.g. `tank/cscm/servers/3`).
+2. Mount the host `zfs` binary into the container (`-v /sbin/zfs:/usr/local/bin/zfs:ro`) and expose `/dev/zfs`.
+3. The container needs the `SYS_ADMIN` capability or equivalent ZFS privilege.
+
+Restore rolls back via `zfs rollback -r <snapshot>` (destroys newer snapshots). Back up your snapshot list before restoring.
+
+| Method   | Path                                             | Body                                                                     | Notes                                                                      |
+| -------- | ------------------------------------------------ | ------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `GET`    | `/api/servers/<id>/backups`                      | —                                                                        | List backups, newest first. Each entry includes `backup_type`.             |
+| `POST`   | `/api/servers/<id>/backups`                      | `{"type": "zip"}` (optional)                                             | Create a manual backup. Defaults to `zip`.                                 |
+| `GET`    | `/api/servers/<id>/backups/<backup_id>/download` | —                                                                        | Download as `.zip`. Copy backups are zipped on-the-fly. ZFS returns `400`. |
+| `DELETE` | `/api/servers/<id>/backups/<backup_id>`          | —                                                                        | Delete record and archive/snapshot.                                        |
+| `POST`   | `/api/servers/<id>/backups/<backup_id>/restore`  | —                                                                        | Stop server, restore data, restart.                                        |
+| `GET`    | `/api/servers/<id>/backups/schedule`             | —                                                                        | Returns `{cron, retention, enabled, backup_type}` or `{"schedule": null}`. |
+| `PUT`    | `/api/servers/<id>/backups/schedule`             | `{"cron": "0 4 * * *", "retention": 5, "enabled": true, "type": "copy"}` | Create/update a scheduled backup. `type` defaults to `zip`.                |
+| `DELETE` | `/api/servers/<id>/backups/schedule`             | —                                                                        | Remove the schedule.                                                       |
 
 Scheduled backups are pruned to `retention` most-recent copies after each run (manual
 backups are never auto-pruned).
