@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/dialog"
 import type { Server, ServerStats } from "@/lib/types"
 import { api } from "@/lib/api"
-import { parsePlayersRaw } from "@/lib/utils"
+import { parsePlayers } from "@/lib/utils"
 
 interface Props {
   server: Server
@@ -98,7 +98,7 @@ export function ServerCard({ server, stats, onRefresh }: Props) {
             <Users className="size-3" />
             {isRunning && stats
               ? (() => {
-                  const { online, max } = parsePlayersRaw(stats.players_raw)
+                  const { online, max } = parsePlayers(stats)
                   return `${online}/${max ?? "—"}`
                 })()
               : "—"}{" "}
@@ -111,9 +111,14 @@ export function ServerCard({ server, stats, onRefresh }: Props) {
 
         {/* DNS / tunnel */}
         {server.dns_records.length > 0 && (
-          <p className="truncate text-xs text-muted-foreground">
-            {server.dns_records[0].name}
-          </p>
+          <div className="text-xs text-muted-foreground">
+            <p className="truncate">{server.dns_records[0].name}</p>
+            {server.type === "bedrock" && server.tunnels.length > 0 && (
+              <p className="truncate font-medium text-foreground">
+                Port {server.tunnels[0].external_port}
+              </p>
+            )}
+          </div>
         )}
 
         {/* Actions */}

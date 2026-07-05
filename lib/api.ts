@@ -69,6 +69,7 @@ export const api = {
       apiCall("/servers", { method: "POST", body: JSON.stringify(data) }),
     delete: (id: number) => apiCall(`/servers/${id}`, { method: "DELETE" }),
     stats: (id: number) => apiCall(`/servers/${id}/stats`),
+    progress: (id: number) => apiCall(`/servers/${id}/progress`),
     logs: (id: number, tail = 200) =>
       apiCall(`/servers/${id}/logs?tail=${tail}`),
   },
@@ -415,6 +416,21 @@ export const api = {
         id: string
         type: "release" | "snapshot" | "old_beta" | "old_alpha"
       }[]
+    },
+    fabricLoaders: async () => {
+      const res = await fetch("/api/loader-versions?loader=fabric")
+      if (!res.ok) throw new Error("Failed to fetch Fabric loader versions")
+      return res.json() as Promise<{ id: string; stable: boolean }[]>
+    },
+    forgeVersions: async (mcVersion: string) => {
+      const res = await fetch(
+        `/api/loader-versions?loader=forge&mcVersion=${encodeURIComponent(mcVersion)}`
+      )
+      if (!res.ok) throw new Error("Failed to fetch Forge versions")
+      return res.json() as Promise<{
+        versions: string[]
+        latest: string | null
+      }>
     },
   },
   health: () => fetch("/health").then((r) => r.json()),

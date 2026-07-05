@@ -4,7 +4,7 @@ import { Loader2 } from "lucide-react"
 
 import { Progress } from "@/components/ui/progress"
 import type { ServerStats as Stats } from "@/lib/types"
-import { formatBytes, parsePlayersRaw } from "@/lib/utils"
+import { formatBytes, parsePlayers } from "@/lib/utils"
 
 interface Props {
   stats: Stats | null
@@ -63,7 +63,7 @@ export function ServerStats({ stats, loading = false }: Props) {
   const memPct =
     memLimit > 0 ? Math.min(100, Math.round((memUsed / memLimit) * 100)) : 0
 
-  const { online, max, names } = parsePlayersRaw(stats.players_raw)
+  const { online, max, names } = parsePlayers(stats)
   const dotColor = stats.running
     ? (healthColor[stats.health] ?? "bg-emerald-500")
     : "bg-zinc-400"

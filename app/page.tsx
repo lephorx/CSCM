@@ -8,9 +8,11 @@ import { DefaultsEditor } from "@/components/DefaultsEditor"
 import { TopNav } from "@/components/TopNav"
 import { ServerCard } from "@/components/ServerCard"
 import { ServerCreateModal } from "@/components/ServerCreateModal"
+import { ServerCreationProgress } from "@/components/ServerCreationProgress"
 import { AuthPage } from "@/components/AuthPage"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
+import { useServerCreation } from "@/hooks/useServerCreation"
 import { normalizeServer } from "@/lib/utils"
 import type { Server, ServerStats } from "@/lib/types"
 
@@ -64,6 +66,12 @@ export default function DashboardPage() {
     }
   }, [])
 
+  const {
+    task: creationTask,
+    start: startCreation,
+    dismiss: dismissCreation,
+  } = useServerCreation(fetchServers)
+
   useEffect(() => {
     if (!authenticated) return
     fetchServers()
@@ -72,6 +80,21 @@ export default function DashboardPage() {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   }, [fetchServers, authenticated])
+
+  // Auto-dismiss a completed creation — quickly if the modal is still open
+  // (it's about to show a "View Server" button anyway), longer if it's just
+  // the background notification.
+  useEffect(() => {
+    if (creationTask?.stage !== "ready") return
+    const t = setTimeout(
+      () => {
+        setCreateOpen(false)
+        dismissCreation()
+      },
+      createOpen ? 2000 : 5000
+    )
+    return () => clearTimeout(t)
+  }, [creationTask?.stage, createOpen, dismissCreation])
 
   // Show a full-screen spinner while checking auth
   if (authLoading) {
@@ -161,8 +184,15 @@ export default function DashboardPage() {
       <ServerCreateModal
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={fetchServers}
+        task={creationTask}
+        onStart={startCreation}
+        onDismiss={dismissCreation}
       />
+
+      {/* Floating progress — shown when modal is closed but creation is still running */}
+      {creationTask && !createOpen && (
+        <ServerCreationProgress task={creationTask} onDismiss={dismissCreation} />
+      )}
     </div>
   )
 }

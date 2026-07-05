@@ -240,7 +240,7 @@ export default function ServerDetailPage() {
 
   async function handleEditSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!editField) return
+    if (!editField || !server) return
     setEditSaving(true)
     try {
       if (editField === "name") {
@@ -260,13 +260,18 @@ export default function ServerDetailPage() {
         await api.control.changePort(serverId, port)
         toast.success("Port updated")
       } else if (editField === "ram") {
+        const isBedrock = server.type === "bedrock"
         const min = parseInt(editValues.mem_min, 10)
         const max = parseInt(editValues.mem_max, 10)
-        if (isNaN(min) || min < 1 || isNaN(max) || max < min) {
+        if (
+          (!isBedrock && (isNaN(min) || min < 1)) ||
+          isNaN(max) ||
+          max < (isBedrock ? 1 : min)
+        ) {
           toast.error("Invalid RAM values")
           return
         }
-        await api.control.changeRam(serverId, min, max)
+        await api.control.changeRam(serverId, isBedrock ? max : min, max)
         toast.success("RAM updated")
       } else if (editField === "version") {
         const version = editValues.version.trim()
@@ -399,13 +404,40 @@ export default function ServerDetailPage() {
         {server.dns_records.length > 0 ? (
           <div className="mb-6 flex items-center justify-between border border-border bg-muted/40 px-4 py-3">
             <div className="text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">Connect: </span>
-              {server.dns_records[0].name}
-              {server.tunnels.length > 0 && (
-                <span className="ml-4">
-                  Tunnel: {server.tunnels[0].address}:
-                  {server.tunnels[0].external_port}
-                </span>
+              {server.type === "bedrock" ? (
+                <>
+                  <div>
+                    <span className="font-medium text-foreground">
+                      Address:{" "}
+                    </span>
+                    {server.dns_records[0].name}
+                  </div>
+                  {server.tunnels.length > 0 && (
+                    <div className="mt-0.5">
+                      <span className="font-medium text-foreground">
+                        Port:{" "}
+                      </span>
+                      {server.tunnels[0].external_port}
+                    </div>
+                  )}
+                  <p className="mt-1 text-[11px] text-muted-foreground/80">
+                    Bedrock needs Address and Port entered separately —
+                    don&apos;t combine them as address:port.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <span className="font-medium text-foreground">
+                    Connect:{" "}
+                  </span>
+                  {server.dns_records[0].name}
+                  {server.tunnels.length > 0 && (
+                    <span className="ml-4">
+                      Tunnel: {server.tunnels[0].address}:
+                      {server.tunnels[0].external_port}
+                    </span>
+                  )}
+                </>
               )}
             </div>
             <Button
@@ -471,7 +503,11 @@ export default function ServerDetailPage() {
             value="players"
             className="mt-0 border border-t-0 border-border"
           >
-            <PlayersPanel serverId={serverId} isRunning={isRunning} />
+            <PlayersPanel
+              serverId={serverId}
+              isRunning={isRunning}
+              serverType={server.type}
+            />
           </TabsContent>
 
           <TabsContent
@@ -503,10 +539,12 @@ export default function ServerDetailPage() {
                 {
                   label: "Version",
                   value:
-                    server.version +
-                    (server.loader_version
-                      ? ` / ${server.loader_version}`
-                      : ""),
+                    server.type === "bedrock"
+                      ? "Always latest"
+                      : server.version +
+                        (server.loader_version
+                          ? ` / ${server.loader_version}`
+                          : ""),
                   field: "version" as const,
                 },
                 {
@@ -531,14 +569,17 @@ export default function ServerDetailPage() {
                     <p className="text-xs text-muted-foreground">{label}</p>
                     <p className="text-sm font-medium">{value}</p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openEdit(field)}
-                  >
-                    <Pencil className="size-3.5" />
-                    Edit
-                  </Button>
+                  {/* Bedrock always runs the latest release — nothing to edit */}
+                  {!(field === "version" && server.type === "bedrock") && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => openEdit(field)}
+                    >
+                      <Pencil className="size-3.5" />
+                      Edit
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
@@ -682,29 +723,26 @@ export default function ServerDetailPage() {
                     disabled={editSaving}
                   />
                 </div>
-                {["forge", "fabric", "quilt"].includes(server.type) && (
+                {["forge", "fabric"].includes(server.type) && (
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
                       <Label htmlFor="edit-loader-ver">Loader Version</Label>
                       <span className="text-[10px] text-muted-foreground">
-                        {server.type === "forge"
-                          ? "RECOMMENDED · LATEST · 47.3.0…"
-                          : "empty = latest"}
+                        empty = latest
                       </span>
                     </div>
-                    <Input
-                      id="edit-loader-ver"
-                      placeholder={
-                        server.type === "forge" ? "RECOMMENDED" : "0.15.11"
-                      }
+                    <VersionPicker
                       value={editValues.loader_version}
-                      onChange={(e) =>
-                        setEditValues((v) => ({
-                          ...v,
-                          loader_version: e.target.value,
+                      onChange={(v) =>
+                        setEditValues((prev) => ({
+                          ...prev,
+                          loader_version: v,
                         }))
                       }
                       disabled={editSaving}
+                      mode="loader"
+                      loaderType={server.type as "forge" | "fabric"}
+                      gameVersion={editValues.version.trim()}
                     />
                   </div>
                 )}
@@ -730,6 +768,7 @@ export default function ServerDetailPage() {
                   <Label htmlFor="edit-port">Port</Label>
                   <span className="text-xs text-muted-foreground">
                     1024–65535
+                    {server.type === "bedrock" ? " (UDP)" : ""}
                   </span>
                 </div>
                 <Input
@@ -751,23 +790,36 @@ export default function ServerDetailPage() {
               </div>
             )}
             {editField === "ram" && (
-              <div className="grid grid-cols-2 gap-3">
+              <div
+                className={
+                  server.type === "bedrock"
+                    ? "grid grid-cols-1 gap-3"
+                    : "grid grid-cols-2 gap-3"
+                }
+              >
+                {server.type !== "bedrock" && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="edit-memmin">Min (GB)</Label>
+                    <Input
+                      id="edit-memmin"
+                      type="number"
+                      min={1}
+                      value={editValues.mem_min}
+                      onChange={(e) =>
+                        setEditValues((v) => ({
+                          ...v,
+                          mem_min: e.target.value,
+                        }))
+                      }
+                      disabled={editSaving}
+                      autoFocus
+                    />
+                  </div>
+                )}
                 <div className="space-y-1.5">
-                  <Label htmlFor="edit-memmin">Min (GB)</Label>
-                  <Input
-                    id="edit-memmin"
-                    type="number"
-                    min={1}
-                    value={editValues.mem_min}
-                    onChange={(e) =>
-                      setEditValues((v) => ({ ...v, mem_min: e.target.value }))
-                    }
-                    disabled={editSaving}
-                    autoFocus
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="edit-memmax">Max (GB)</Label>
+                  <Label htmlFor="edit-memmax">
+                    {server.type === "bedrock" ? "Memory Limit (GB)" : "Max (GB)"}
+                  </Label>
                   <Input
                     id="edit-memmax"
                     type="number"
@@ -777,6 +829,7 @@ export default function ServerDetailPage() {
                       setEditValues((v) => ({ ...v, mem_max: e.target.value }))
                     }
                     disabled={editSaving}
+                    autoFocus={server.type === "bedrock"}
                   />
                 </div>
               </div>

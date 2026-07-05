@@ -1,7 +1,7 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 
-import type { ParsedPlayers, PlayerRef, Server } from "@/lib/types"
+import type { ParsedPlayers, PlayerRef, Server, ServerStats } from "@/lib/types"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -32,6 +32,22 @@ export function parsePlayersRaw(raw: string | null | undefined): ParsedPlayers {
     : []
 
   return { online, max, names }
+}
+
+// Bedrock has no RCON, so /stats reports players_online (list) + player_count
+// instead of Java's players_raw text. Unifies both into the same shape —
+// Bedrock has no reported max-players, so `max` is always null there.
+export function parsePlayers(
+  stats: Pick<ServerStats, "players_raw" | "players_online" | "player_count"> | null | undefined
+): ParsedPlayers {
+  if (stats?.players_online) {
+    return {
+      online: stats.player_count ?? stats.players_online.length,
+      max: null,
+      names: stats.players_online,
+    }
+  }
+  return parsePlayersRaw(stats?.players_raw)
 }
 
 // Some endpoints (notably GET /servers/<id>) may omit tunnels/dns_records

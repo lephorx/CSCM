@@ -1258,9 +1258,14 @@ function PlayerDetailDialog({
 interface Props {
   serverId: number
   isRunning: boolean
+  serverType: string
 }
 
-export function PlayersPanel({ serverId, isRunning }: Props) {
+export function PlayersPanel({ serverId, isRunning, serverType }: Props) {
+  // Almost every per-player action (gamemode, heal/feed, effects, inventory,
+  // teleport, statistics, ...) is RCON-based and Java-only — Bedrock has no
+  // RCON. Kicking still works there via the raw command API (send-command).
+  const isBedrock = serverType === "bedrock"
   const [data, setData] = useState<PlayersData | null>(null)
   const [history, setHistory] = useState<PlayerHistoryEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -1356,19 +1361,32 @@ export function PlayersPanel({ serverId, isRunning }: Props) {
                     key={name}
                     className="flex items-center justify-between gap-2"
                   >
-                    <button
-                      className="flex items-center gap-1.5 text-sm hover:underline"
-                      onClick={() => setSelectedPlayer(name)}
-                    >
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={playerHeadUrl(name)}
-                        alt={name}
-                        className="size-5 rounded-sm"
-                        style={{ imageRendering: "pixelated" }}
-                      />
-                      {name}
-                    </button>
+                    {isBedrock ? (
+                      <span className="flex items-center gap-1.5 text-sm">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={playerHeadUrl(name)}
+                          alt={name}
+                          className="size-5 rounded-sm"
+                          style={{ imageRendering: "pixelated" }}
+                        />
+                        {name}
+                      </span>
+                    ) : (
+                      <button
+                        className="flex items-center gap-1.5 text-sm hover:underline"
+                        onClick={() => setSelectedPlayer(name)}
+                      >
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={playerHeadUrl(name)}
+                          alt={name}
+                          className="size-5 rounded-sm"
+                          style={{ imageRendering: "pixelated" }}
+                        />
+                        {name}
+                      </button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
@@ -1377,7 +1395,9 @@ export function PlayersPanel({ serverId, isRunning }: Props) {
                       onClick={() => {
                         if (!requireRunning()) return
                         withPending(`kick-${name}`, () =>
-                          api.players.kick(serverId, name)
+                          isBedrock
+                            ? api.control.command(serverId, `kick ${name}`)
+                            : api.players.kick(serverId, name)
                         )
                       }}
                     >
@@ -1574,28 +1594,49 @@ export function PlayersPanel({ serverId, isRunning }: Props) {
           </p>
         ) : (
           <div className="grid gap-0.5 sm:grid-cols-2 lg:grid-cols-3">
-            {history.map((p) => (
-              <button
-                key={p.uuid}
-                className="flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
-                onClick={() => setSelectedPlayer(p.name)}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={playerHeadUrl(p.name)}
-                  alt={p.name}
-                  className="size-6 rounded-sm"
-                  style={{ imageRendering: "pixelated" }}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{p.name}</p>
-                  <p className="truncate text-[10px] text-muted-foreground">
-                    {new Date(p.last_seen).toLocaleDateString()}
-                  </p>
+            {history.map((p) =>
+              isBedrock ? (
+                <div
+                  key={p.uuid}
+                  className="flex items-center gap-2 rounded px-2 py-1.5 text-left"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={playerHeadUrl(p.name)}
+                    alt={p.name}
+                    className="size-6 rounded-sm"
+                    style={{ imageRendering: "pixelated" }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">{p.name}</p>
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {new Date(p.last_seen).toLocaleDateString()}
+                    </p>
+                  </div>
                 </div>
-                <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-              </button>
-            ))}
+              ) : (
+                <button
+                  key={p.uuid}
+                  className="flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
+                  onClick={() => setSelectedPlayer(p.name)}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={playerHeadUrl(p.name)}
+                    alt={p.name}
+                    className="size-6 rounded-sm"
+                    style={{ imageRendering: "pixelated" }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">{p.name}</p>
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {new Date(p.last_seen).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+                </button>
+              )
+            )}
           </div>
         )}
       </div>

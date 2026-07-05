@@ -43,7 +43,11 @@ export interface ServerStats {
   cpu_percent: number
   memory_usage_bytes: number
   memory_limit_bytes: number
+  // Java: raw RCON `list` output, e.g. "There are 2 of a max of 20 players online: Steve, Alex"
   players_raw?: string | null
+  // Bedrock: no RCON, so this is reconstructed from container log connect/disconnect lines instead
+  players_online?: string[] | null
+  player_count?: number | null
 }
 
 export interface ParsedPlayers {
