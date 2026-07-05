@@ -16,6 +16,7 @@ log = get_logger("properties_manager")
 
 BLACKLISTED_KEYS = {
     "server-port",
+    "server-portv6",  # Bedrock IPv6 port — also env-pinned
     "enable-rcon",
     "rcon.port",
     "rcon.password",

@@ -44,7 +44,7 @@ components:
         id: { type: integer }
         name: { type: string }
         slug: { type: string }
-        type: { type: string, enum: [paper, forge, fabric, vanilla, purpur] }
+        type: { type: string, enum: [paper, forge, fabric, vanilla, purpur, bedrock] }
         version: { type: string }
         port: { type: integer }
         status: { type: string }
@@ -159,7 +159,7 @@ paths:
   /api/server-types:
     get:
       tags: [Servers]
-      summary: List supported Minecraft server flavors
+      summary: List supported Minecraft server flavors (Java flavors + bedrock)
       responses:
         "200": { description: OK }
 
@@ -180,7 +180,15 @@ paths:
                     items: { $ref: "#/components/schemas/Server" }
     post:
       tags: [Servers]
-      summary: Provision a new Minecraft server
+      summary: Provision a new Minecraft server (async — returns 202)
+      description: >
+        `type: "bedrock"` provisions an itzg/minecraft-bedrock-server container
+        instead of the Java image: the port is published as UDP (default 19132),
+        there is no RCON (console commands use the image's send-command script
+        and return no output), and no Cloudflare SRV record is created since
+        Bedrock has no SRV-based port discovery — players must be given the
+        connect address and port directly. loader_version and mem_min are
+        ignored for bedrock (no loader, no JVM).
       requestBody:
         required: true
         content:
@@ -193,17 +201,19 @@ paths:
                 type:
                   {
                     type: string,
-                    enum: [paper, forge, fabric, vanilla, purpur],
+                    enum: [paper, forge, fabric, vanilla, purpur, bedrock],
                     default: paper,
                   }
-                version: { type: string, default: "1.21.4" }
+                version:
+                  type: string
+                  default: "1.21.4"
+                  description: Defaults to "LATEST" when type is "bedrock".
                 port:
-                  {
-                    type: integer,
-                    minimum: 1024,
-                    maximum: 65535,
-                    default: 25565,
-                  }
+                  type: integer
+                  minimum: 1024
+                  maximum: 65535
+                  default: 25565
+                  description: Defaults to 19132 when type is "bedrock".
                 mem_min: { type: integer, default: 2 }
                 mem_max: { type: integer, default: 4 }
                 subscription: { type: string, enum: [premium, free] }
@@ -216,15 +226,14 @@ paths:
                     forge — "RECOMMENDED" | "LATEST" | specific e.g. "47.3.0"
                     fabric — specific e.g. "0.15.11", omit for latest
                     quilt — specific version, omit for latest
-                    paper/vanilla/purpur — not used
+                    paper/vanilla/purpur/bedrock — not used
                 properties:
                   type: object
                   additionalProperties: { type: string }
       responses:
-        "201": { description: Created }
+        "202": { description: "Provisioning started (poll GET /api/servers/<id>/progress)" }
         "400": { description: Validation error }
         "409": { description: Port conflict }
-        "500": { description: Provisioning failed }
 
   /api/servers/{id}:
     get:
@@ -236,11 +245,37 @@ paths:
         "404": { description: Not found }
     delete:
       tags: [Servers]
-      summary: Deprovision a server and all its resources
+      summary: Deprovision a server and all its resources (async — returns 202)
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       responses:
-        "200": { description: Deleted }
+        "202": { description: Deletion started }
         "404": { description: Not found }
+        "409": { description: Deletion already in progress }
+
+  /api/servers/{id}/progress:
+    get:
+      tags: [Servers]
+      summary: Live provisioning or deletion progress
+      description: >
+        Poll after a 202 response from POST /api/servers or DELETE /api/servers/{id}.
+        Returns percent (0-100), step description, status (idle | in_progress | completed | failed),
+        and the action being tracked (provision | delete).
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200":
+          description: Current progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server_id: { type: integer }
+                  action: { type: string, nullable: true, enum: [provision, delete] }
+                  status: { type: string, enum: [idle, in_progress, completed, failed] }
+                  percent: { type: integer, minimum: 0, maximum: 100 }
+                  step: { type: string, nullable: true }
+                  message: { type: string, nullable: true }
+                  updated_at: { type: string, nullable: true, format: date-time }
 
   /api/servers/{id}/start:
     post:
@@ -273,7 +308,10 @@ paths:
   /api/servers/{id}/command:
     post:
       tags: [Console]
-      summary: Send an RCON console command
+      summary: Send a console command (RCON for Java, send-command for Bedrock)
+      description: >
+        Bedrock servers have no RCON; the command is delivered via the image's
+        send-command script instead, which does not return console output.
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody:
         required: true
@@ -796,6 +834,11 @@ paths:
   /api/servers/{id}/tunnel:
     post:
       tags: [Networking]
+      summary: Create a PlayIT tunnel and Cloudflare DNS record(s) for an existing server
+      description: >
+        Creates a CNAME record, plus a SRV record for Java servers. Bedrock
+        servers get only the CNAME, since Bedrock has no SRV-based port
+        discovery — share the assigned port with players directly.
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody:
         content:

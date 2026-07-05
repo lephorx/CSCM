@@ -1,16 +1,20 @@
 """Server CRUD, lifecycle, console command, stats, logs, and networking routes."""
 
 import sqlite3
+import threading
 
 from flask import Blueprint, jsonify, request
 
 import docker_manager
+import progress_store
 import properties_manager
 from auth_helpers import authorize
 from db import get_db
 from docker_manager import SERVER_TYPES
 from logger import get_logger
 from server_manager import (
+    _create_server_record,
+    _provision_resources,
     create_server_tunnel,
     deprovision_server,
     list_servers,
@@ -86,18 +90,23 @@ def get_server_detail(server_id: int):
 #
 # Request body (JSON):
 #   name      string  required  Server display name.
-#   type      string  optional  paper|forge|fabric|vanilla|purpur
+#   type      string  optional  paper|forge|fabric|vanilla|purpur|bedrock
 #                               Default: paper
-#   version   string  optional  Minecraft version (e.g. "1.21.4").
-#                               Default: 1.21.4
+#   version   string  optional  Minecraft version (e.g. "1.21.4"), or "LATEST".
+#                               Default: 1.21.4 (Java) / LATEST (Bedrock)
 #   port      int     optional  Host server port (1024-65535).
-#                               Default: 25565
-#   mem_min   int     optional  Minimum JVM heap in GB. Default: 2
-#   mem_max   int     optional  Maximum JVM heap in GB. Default: 4
+#                               Default: 25565 (Java, TCP) / 19132 (Bedrock, UDP)
+#   mem_min   int     optional  Minimum JVM heap in GB. Ignored for Bedrock (no JVM).
+#                               Default: 2
+#   mem_max   int     optional  Maximum JVM heap in GB (Java) or container memory
+#                               cap in GB (Bedrock). Default: 4
 #   subscription string optional Network subscription level: "premium" or "free".
 #                               Default: premium (from PLAYIT_SUBSCRIPTION env var)
 #   agent     string  optional  Agent name for the tunnel (e.g., "US-East", "EU-Central").
 #                               Default: first available (from PLAYIT_AGENT env var)
+#
+# Bedrock servers have no SRV-based port discovery, no RCON, and are not
+# affected by loader_version. See README.md for full Bedrock caveats.
 # ---------------------------------------------------------------------------
 @servers_bp.route("/servers", methods=["POST"])
 def create_server():
@@ -117,9 +126,10 @@ def create_server():
             "error": f"Invalid server type '{server_type}'",
             "valid_types": list(SERVER_TYPES.keys()),
         }), 400
+    is_bedrock = server_type == "bedrock"
 
-    version = body.get("version", "1.21.4")
-    port    = body.get("port", 25565)
+    version = body.get("version") or ("LATEST" if is_bedrock else "1.21.4")
+    port    = body.get("port")   or (19132 if is_bedrock else 25565)
     mem_min = body.get("mem_min", 2)
     mem_max = body.get("mem_max", 4)
     loader_version   = body.get("loader_version")  # None = image default
@@ -129,11 +139,12 @@ def create_server():
 
     if not isinstance(port, int) or not (1024 <= port <= 65535):
         return jsonify({"error": "'port' must be an integer between 1024 and 65535"}), 400
-    if not isinstance(mem_min, int) or not isinstance(mem_max, int) \
-            or mem_min < 1 or mem_max < mem_min:
-        return jsonify({
-            "error": "'mem_min' and 'mem_max' must be positive integers with mem_max >= mem_min"
-        }), 400
+    if not isinstance(mem_min, int) or not isinstance(mem_max, int) or mem_min < 1 or mem_max < 1:
+        return jsonify({"error": "'mem_min' and 'mem_max' must be positive integers"}), 400
+    if not is_bedrock and mem_max < mem_min:
+        # mem_min is ignored for bedrock (no JVM heap), so it has no ordering
+        # relationship with mem_max (the container memory cap) there.
+        return jsonify({"error": "'mem_max' must be >= 'mem_min'"}), 400
     if subscription and subscription.lower() not in ("premium", "free"):
         return jsonify({"error": "'subscription' must be 'premium' or 'free'"}), 400
     if initial_properties is not None and not isinstance(initial_properties, dict):
@@ -144,34 +155,31 @@ def create_server():
         name, server_type, version, port,
     )
 
-    result = provision_server(
-        server_name=name,
-        server_type=server_type,
-        version=version,
-        loader_version=loader_version,
-        server_port=port,
-        mem_min=mem_min,
-        mem_max=mem_max,
-        subscription=subscription,
-        agent=agent,
-    )
+    # Step 1 (synchronous): create DB record → get server_id immediately
+    record = _create_server_record(name, server_type, version, loader_version,
+                                    port, mem_min, mem_max)
+    if not record["success"]:
+        log.error("Server creation record failed: %s", record.get("message"))
+        return jsonify(record), 409 if record.get("conflict") else 400
 
-    if result["success"]:
-        properties_result = properties_manager.apply_initial_properties(result["server_id"], initial_properties)
-        if properties_result.get("changed"):
-            result["initial_properties"] = {
-                "changed": properties_result.get("changed", []),
-                "rejected": properties_result.get("rejected", []),
-                "restart_required": properties_result.get("restart_required", False),
-            }
-        if properties_result.get("warning"):
-            result["warning"] = properties_result["warning"]
-        log.info("Server creation completed: db_id=%s", result.get("server_id"))
-        return jsonify(result), 201
-    log.error("Server creation failed: %s", result.get("message"))
-    if result.get("conflict"):
-        return jsonify(result), 409
-    return jsonify(result), 500
+    server_id = record["server_id"]
+    subdomain  = record["subdomain"]
+    progress_store.update(server_id, action="provision", percent=5,
+                          step="Database record created")
+
+    # Steps 2-6 (async): container, PlayIT, Cloudflare
+    def _bg_provision():
+        result = _provision_resources(server_id, subdomain, port, subscription, agent)
+        if result.get("success") and initial_properties:
+            properties_manager.apply_initial_properties(server_id, initial_properties)
+
+    threading.Thread(target=_bg_provision, daemon=True).start()
+    log.info("Server provisioning started (background): db_id=%d", server_id)
+    return jsonify({
+        "success": True,
+        "message": "Server provisioning started",
+        "server_id": server_id,
+    }), 202
 
 
 # ---------------------------------------------------------------------------
@@ -182,17 +190,42 @@ def delete_server(server_id: int):
     auth_err = authorize()
     if auth_err:
         return auth_err
+    if not _server_exists(server_id):
+        return jsonify({"success": False, "message": "Server not found"}), 404
 
-    log.info("Server deletion requested: db_id=%d", server_id)
-    result = deprovision_server(server_id)
+    # Guard against concurrent deletion
+    prog = progress_store.get(server_id)
+    if prog["action"] == "delete" and prog["status"] == "in_progress":
+        return jsonify({"success": False, "message": "Deletion already in progress"}), 409
 
-    if result["success"]:
-        log.info("Server deletion completed: db_id=%d", server_id)
-        return jsonify(result), 200
-    if "No server found" in result.get("message", ""):
-        return jsonify(result), 404
-    log.error("Server deletion failed: %s", result.get("message"))
-    return jsonify(result), 500
+    progress_store.update(server_id, action="delete", percent=2, step="Deletion queued")
+
+    def _bg_delete():
+        deprovision_server(server_id)
+
+    threading.Thread(target=_bg_delete, daemon=True).start()
+    log.info("Server deletion started (background): db_id=%d", server_id)
+    return jsonify({
+        "success": True,
+        "message": "Server deletion started",
+        "server_id": server_id,
+    }), 202
+
+
+# ---------------------------------------------------------------------------
+# GET /api/servers/<id>/progress
+# ---------------------------------------------------------------------------
+@servers_bp.route("/servers/<int:server_id>/progress", methods=["GET"])
+def server_progress(server_id: int):
+    """Return real-time provisioning or deletion progress for a server.
+
+    Poll this endpoint while waiting for a 202 response from
+    POST /api/servers or DELETE /api/servers/<id> to complete.
+    """
+    auth_err = authorize()
+    if auth_err:
+        return auth_err
+    return jsonify(progress_store.get(server_id)), 200
 
 
 # ---------------------------------------------------------------------------
@@ -434,17 +467,18 @@ def update_server_ram(server_id: int):
     body = request.get_json(silent=True) or {}
     mem_min = body.get("mem_min")
     mem_max = body.get("mem_max")
-    if not isinstance(mem_min, int) or not isinstance(mem_max, int) \
-            or mem_min < 1 or mem_max < mem_min:
-        return jsonify({
-            "success": False,
-            "message": "'mem_min' and 'mem_max' must be positive integers with mem_max >= mem_min",
-        }), 400
+    if not isinstance(mem_min, int) or not isinstance(mem_max, int) or mem_min < 1 or mem_max < 1:
+        return jsonify({"success": False, "message": "'mem_min' and 'mem_max' must be positive integers"}), 400
 
     with get_db() as conn:
         row = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
     if not row:
         return jsonify({"success": False, "message": "Server not found"}), 404
+
+    # mem_min is ignored for bedrock (no JVM heap), so it has no ordering
+    # relationship with mem_max (the container memory cap) there.
+    if row["type"] != "bedrock" and mem_max < mem_min:
+        return jsonify({"success": False, "message": "'mem_max' must be >= 'mem_min'"}), 400
 
     with get_db() as conn:
         conn.execute(

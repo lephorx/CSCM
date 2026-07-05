@@ -1,16 +1,20 @@
 """Native Minecraft server lifecycle management via the Docker Engine API.
 
 Replaces the Crafty Controller integration entirely. Each Minecraft server
-is one Docker container running the `itzg/minecraft-server` image, which
-handles jar download/installation for every supported server type, EULA
-acceptance, memory limits, and bundles `rcon-cli` for console commands.
+is one Docker container. Java edition servers (paper/forge/fabric/vanilla/
+purpur) run the `itzg/minecraft-server` image, which handles jar download/
+installation, EULA acceptance, memory limits, and bundles `rcon-cli` for
+console commands. Bedrock edition servers run the separate
+`itzg/minecraft-bedrock-server` image instead — no JVM, no RCON; console
+access goes through that image's `send-command` script.
 
-Every container this module creates is labelled `cscm.managed=true` and
-`cscm.server_id=<id>`; all lookups filter on these labels so the app never
-touches a container it didn't create.
+Every container this module creates is labelled `cscm.managed=true`,
+`cscm.server_id=<id>`, and `cscm.type=<java|bedrock>`; all lookups filter
+on these labels so the app never touches a container it didn't create.
 """
 
 import os
+import re
 import shlex
 
 import docker
@@ -24,6 +28,8 @@ load_dotenv()
 log = get_logger("docker_manager")
 
 MC_IMAGE = os.getenv("MC_IMAGE", "itzg/minecraft-server:java21")
+# Separate image for the Bedrock edition — not JVM-based, no server "TYPE" flavours.
+BEDROCK_IMAGE = os.getenv("MC_BEDROCK_IMAGE", "itzg/minecraft-bedrock-server")
 
 # Path as seen by the Docker daemon (host path) — used only for bind mounts.
 SERVERS_DIR_HOST = os.getenv("SERVERS_DIR_HOST", "/opt/cscm/servers")
@@ -33,15 +39,26 @@ SERVERS_DIR = os.getenv("SERVERS_DIR", "/data/servers")
 CONTAINER_PREFIX = "cscm-mc-"
 MANAGED_LABEL = "cscm.managed"
 SERVER_ID_LABEL = "cscm.server_id"
+# "java" | "bedrock" — read back at runtime to route console commands correctly
+# without a DB round-trip (see send_rcon / get_stats).
+TYPE_LABEL = "cscm.type"
 
-# Public API type -> itzg/minecraft-server TYPE env value.
-SERVER_TYPES = {
+BEDROCK_PORT = 19132
+
+# Public API type -> itzg/minecraft-server TYPE env value (Java edition image).
+JAVA_TYPES = {
     "paper":   "PAPER",
     "forge":   "FORGE",
     "fabric":  "FABRIC",
     "vanilla": "VANILLA",
     "purpur":  "PURPUR",
 }
+
+# Public API type(s) served by the separate itzg/minecraft-bedrock-server image.
+BEDROCK_TYPES = {"bedrock"}
+
+# All valid public server types, for input validation and /api/server-types.
+SERVER_TYPES = {**JAVA_TYPES, "bedrock": "BEDROCK"}
 
 _client: docker.DockerClient | None = None
 
@@ -80,6 +97,14 @@ def get_container(server_id: int):
     return container
 
 
+def get_server_edition(server_id: int) -> str | None:
+    """Return "java" or "bedrock" from the container's label, or None if no container exists."""
+    container = get_container(server_id)
+    if not container:
+        return None
+    return container.labels.get(TYPE_LABEL)
+
+
 def create_server_container(row) -> str:
     """Create and start a Minecraft server container for a DB server row.
 
@@ -91,7 +116,6 @@ def create_server_container(row) -> str:
         The Docker container ID.
     """
     server_id = row["id"]
-    itzg_type = SERVER_TYPES[row["type"]]
 
     # Remove any leftover container from a previous failed provision attempt.
     existing = get_container(server_id)
@@ -103,6 +127,15 @@ def create_server_container(row) -> str:
             log.warning("Could not remove leftover container: %s", exc)
 
     os.makedirs(server_data_dir(server_id), exist_ok=True)
+
+    if row["type"] in BEDROCK_TYPES:
+        return _create_bedrock_container(row)
+    return _create_java_container(row)
+
+
+def _create_java_container(row) -> str:
+    server_id = row["id"]
+    itzg_type = SERVER_TYPES[row["type"]]
 
     client = _get_client()
     env = {
@@ -131,9 +164,34 @@ def create_server_container(row) -> str:
         ports={"25565/tcp": row["serverport"]},
         volumes={_host_bind_path(server_id): {"bind": "/data", "mode": "rw"}},
         restart_policy={"Name": "unless-stopped"},
-        labels={MANAGED_LABEL: "true", SERVER_ID_LABEL: str(server_id)},
+        labels={MANAGED_LABEL: "true", SERVER_ID_LABEL: str(server_id), TYPE_LABEL: "java"},
     )
     log.info("Container created: server_id=%d, container_id=%s", server_id, container.id)
+    return container.id
+
+
+def _create_bedrock_container(row) -> str:
+    """Bedrock edition has no JVM (no heap flags) and no RCON — the itzg
+    image exposes console access via the ``send-command`` script instead.
+    """
+    server_id = row["id"]
+    client = _get_client()
+    env = {
+        "EULA": "TRUE",
+        "VERSION": row["version"],
+    }
+    container = client.containers.run(
+        BEDROCK_IMAGE,
+        name=container_name(server_id),
+        detach=True,
+        environment=env,
+        ports={f"{BEDROCK_PORT}/udp": row["serverport"]},
+        volumes={_host_bind_path(server_id): {"bind": "/data", "mode": "rw"}},
+        restart_policy={"Name": "unless-stopped"},
+        mem_limit=f"{row['mem_max_gb']}g",
+        labels={MANAGED_LABEL: "true", SERVER_ID_LABEL: str(server_id), TYPE_LABEL: "bedrock"},
+    )
+    log.info("Bedrock container created: server_id=%d, container_id=%s", server_id, container.id)
     return container.id
 
 
@@ -203,10 +261,23 @@ def kill_server(server_id: int) -> tuple[bool, str]:
 
 
 def send_rcon(server_id: int, command: str) -> str:
-    """Run a command via rcon-cli inside the server's container and return its output."""
+    """Run a console command inside the server's container and return its output.
+
+    Java containers have RCON enabled and use rcon-cli. Bedrock has no RCON
+    support at all, so the itzg image's ``send-command`` script is used
+    instead — it writes to the server's stdin and does not return output.
+    """
     container = get_container(server_id)
     if not container:
         raise NotFound(f"No container for server_id={server_id}")
+
+    if container.labels.get(TYPE_LABEL) == "bedrock":
+        exit_code, output = container.exec_run(["send-command", command])
+        text = output.decode("utf-8", errors="replace").strip()
+        if exit_code != 0:
+            log.warning("send-command exited %d for server_id=%d: %s", exit_code, server_id, text)
+        return text or "Command sent (Bedrock console does not return output)"
+
     exit_code, output = container.exec_run(["rcon-cli", *shlex.split(command)])
     text = output.decode("utf-8", errors="replace").strip()
     if exit_code != 0:
@@ -229,6 +300,40 @@ def stream_logs(server_id: int):
         return
     for chunk in container.logs(stream=True, follow=True, tail=50):
         yield chunk.decode("utf-8", errors="replace")
+
+
+# Bedrock has no RCON, so there is no "list" command response to read back.
+# The itzg image logs join/leave events in a fixed format instead (confirmed
+# against real server logs), e.g.:
+#   [INFO] Player connected: Steve, xuid: 2535409695687979
+#   [INFO] Player disconnected: Steve, xuid: 2535409695687979, pfid: ...
+_BEDROCK_CONNECT_RE = re.compile(r"Player connected: ([^,]+), xuid:")
+_BEDROCK_DISCONNECT_RE = re.compile(r"Player disconnected: ([^,]+), xuid:")
+_BEDROCK_LOG_SCAN_LINES = 5000
+
+
+def get_bedrock_online_players(server_id: int) -> list[str]:
+    """Best-effort online player list for Bedrock, reconstructed by replaying
+    connect/disconnect log lines in order. Bounded to the last
+    _BEDROCK_LOG_SCAN_LINES lines — a player who joined further back than
+    that without a matching disconnect line in the window won't show up.
+    """
+    container = get_container(server_id)
+    if not container:
+        return []
+    raw = container.logs(tail=_BEDROCK_LOG_SCAN_LINES, timestamps=False)
+    text = raw.decode("utf-8", errors="replace")
+
+    online: dict[str, None] = {}
+    for line in text.splitlines():
+        match = _BEDROCK_CONNECT_RE.search(line)
+        if match:
+            online[match.group(1).strip()] = None
+            continue
+        match = _BEDROCK_DISCONNECT_RE.search(line)
+        if match:
+            online.pop(match.group(1).strip(), None)
+    return list(online.keys())
 
 
 def get_stats(server_id: int) -> dict:
@@ -261,11 +366,19 @@ def get_stats(server_id: int) -> dict:
         result["memory_usage_bytes"] = mem.get("usage")
         result["memory_limit_bytes"] = mem.get("limit")
 
-        try:
-            players_output = send_rcon(server_id, "list")
-            result["players_raw"] = players_output
-        except (NotFound, APIError):
-            pass
+        if container.labels.get(TYPE_LABEL) == "bedrock":
+            try:
+                online = get_bedrock_online_players(server_id)
+                result["players_online"] = online
+                result["player_count"] = len(online)
+            except Exception as exc:
+                log.warning("Could not derive online players from logs for server_id=%d: %s", server_id, exc)
+        else:
+            try:
+                players_output = send_rcon(server_id, "list")
+                result["players_raw"] = players_output
+            except (NotFound, APIError):
+                pass
 
     return result
 

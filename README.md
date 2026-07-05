@@ -45,30 +45,35 @@ running CSCM, and all application state lives in a local SQLite database.
                                 ▼
                      ┌──────────────────────┐
                      │   Minecraft server    │   one container per server,
-                     │   containers          │   itzg/minecraft-server image
-                     │   (cscm-mc-<id>)       │
+                     │   containers          │   itzg/minecraft-server (Java) or
+                     │   (cscm-mc-<id>)       │   itzg/minecraft-bedrock-server
                      └──────────────────────┘
                                 │
               ┌─────────────────┴─────────────────┐
               ▼                                     ▼
-     PlayIT.gg tunnel                     Cloudflare DNS (CNAME + SRV)
+     PlayIT.gg tunnel                     Cloudflare DNS (CNAME, + SRV for Java)
      (Playwright automation)              (public connect address)
 ```
 
 CSCM itself runs in one container (or directly on a host with Docker installed). It talks
 to the Docker daemon to create, start, stop, and inspect **one container per Minecraft
-server**, using the [`itzg/minecraft-server`](https://github.com/itzg/docker-minecraft-server)
-image, which handles jar download/installation, EULA acceptance, and memory limits for
-every supported server flavor. Console commands run via `rcon-cli` inside each container;
-there is no exposed RCON port.
+server**. Java edition servers (`paper`/`forge`/`fabric`/`vanilla`/`purpur`) use the
+[`itzg/minecraft-server`](https://github.com/itzg/docker-minecraft-server) image, which
+handles jar download/installation, EULA acceptance, and memory limits for every supported
+flavor; console commands run via `rcon-cli` inside the container, with no exposed RCON
+port. Bedrock edition servers use the separate
+[`itzg/minecraft-bedrock-server`](https://github.com/itzg/docker-minecraft-bedrock-server)
+image — no JVM, no RCON. Console commands there go through the image's `send-command`
+script instead, which does not return output, and player/backup features that depend on
+RCON output parsing are Java-only for now.
 
 All application data — servers, tunnels, DNS records, backups, backup schedules, users —
 lives in a single local SQLite file. There is no external database to provision or manage.
 
 ## Features
 
-- **Self-provisioning**: create a fully configured Minecraft server (any of 5 flavors) with
-  one API call — no manual jar downloads, no external panel.
+- **Self-provisioning**: create a fully configured Minecraft server — 5 Java flavors plus
+  Bedrock edition — with one API call, no manual jar/binary downloads, no external panel.
 - **Full lifecycle control**: start/stop/restart/kill, live console commands via RCON,
   log tailing, and a live console stream over Server-Sent Events (SSE).
 - **Resource management**: change name, port, or RAM allocation (recreates the container;
@@ -139,7 +144,8 @@ All configuration is via environment variables (see `.env.example`).
 | ---------------------------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DB_PATH`                                                              | `cscm.db`                             | Path to the SQLite database file (app data).                                                                                                                                                  |
 | `AUTH_DB_PATH`                                                         | `cscm.db`                             | Path to the SQLite database file (auth data). Point at the same file as `DB_PATH`.                                                                                                            |
-| `MC_IMAGE`                                                             | `itzg/minecraft-server:java21`        | Docker image used for every Minecraft server container.                                                                                                                                       |
+| `MC_IMAGE`                                                             | `itzg/minecraft-server:java21`        | Docker image used for Java edition server containers.                                                                                                                                         |
+| `MC_BEDROCK_IMAGE`                                                     | `itzg/minecraft-bedrock-server`       | Docker image used for `bedrock` type server containers.                                                                                                                                       |
 | `SERVERS_DIR`                                                          | `/data/servers`                       | Path to server data directories **as seen by the CSCM process**. Must be an absolute path — Docker rejects relative paths for bind mounts.                                                    |
 | `SERVERS_DIR_HOST`                                                     | `/opt/cscm/servers`                   | Path to the **same** directory **as seen by the Docker daemon** — used for bind-mounting into Minecraft containers. Only differs from `SERVERS_DIR` when CSCM itself runs inside a container. |
 | `BACKUPS_DIR` / `BACKUPS_DIR_HOST`                                     | `/data/backups` / `/opt/cscm/backups` | Same host/container-path split, for backup archives.                                                                                                                                          |
@@ -287,8 +293,12 @@ Returns the authenticated user for the supplied token.
 #### `GET /api/server-types`
 
 ```json
-{ "server_types": ["paper", "forge", "fabric", "vanilla", "purpur"] }
+{ "server_types": ["paper", "forge", "fabric", "vanilla", "purpur", "bedrock"] }
 ```
+
+`paper`, `forge`, `fabric`, `vanilla`, and `purpur` are Java edition (JVM-based, RCON
+enabled). `bedrock` is Bedrock edition — a separate, non-JVM image with no RCON and no
+SRV-based port discovery. See the caveats under `POST /api/servers` below.
 
 ---
 
@@ -373,18 +383,18 @@ download/world generation happen inside the container afterward. Poll
 
 Request body:
 
-| Field            | Type   | Required | Default       | Notes                                                     |
-| ---------------- | ------ | -------- | ------------- | --------------------------------------------------------- |
-| `name`           | string | yes      | —             | Display name; slugified for the subdomain and DNS name.   |
-| `type`           | string | no       | `paper`       | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`.   |
-| `version`        | string | no       | `1.21.4`      | Minecraft version string.                                 |
-| `loader_version` | string | no       | image default | Loader/software version. See table below.                 |
-| `port`           | int    | no       | `25565`       | Host port (1024–65535), must be unique across servers.    |
-| `mem_min`        | int    | no       | `2`           | Minimum JVM heap, GB.                                     |
-| `mem_max`        | int    | no       | `4`           | Maximum JVM heap, GB.                                     |
-| `subscription`   | string | no       | env default   | `premium` or `free` (PlayIT).                             |
-| `agent`          | string | no       | env default   | PlayIT agent name.                                        |
-| `properties`     | object | no       | defaults      | Initial `server.properties` values to apply during setup. |
+| Field            | Type   | Required | Default                             | Notes                                                     |
+| ---------------- | ------ | -------- | ------------------------------------ | --------------------------------------------------------- |
+| `name`           | string | yes      | —                                     | Display name; slugified for the subdomain and DNS name.   |
+| `type`           | string | no       | `paper`                               | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`\|`bedrock`. |
+| `version`        | string | no       | `1.21.4` (`LATEST` for `bedrock`)     | Minecraft version string.                                 |
+| `loader_version` | string | no       | image default                        | Loader/software version. See table below. Ignored for `bedrock`. |
+| `port`           | int    | no       | `25565` (`19132` for `bedrock`)      | Host port (1024–65535), must be unique across servers.    |
+| `mem_min`        | int    | no       | `2`                                   | Minimum JVM heap, GB. Ignored for `bedrock` (no JVM).     |
+| `mem_max`        | int    | no       | `4`                                   | Maximum JVM heap, GB. For `bedrock`, used as a container memory cap instead. |
+| `subscription`   | string | no       | env default                          | `premium` or `free` (PlayIT).                             |
+| `agent`          | string | no       | env default                          | PlayIT agent name.                                        |
+| `properties`     | object | no       | defaults                             | Initial `server.properties` values to apply during setup. |
 
 `loader_version` values by server type:
 
@@ -395,18 +405,46 @@ Request body:
 | `quilt`  | specific version · omit / `null` for latest                       |
 | others   | not used — ignored if provided                                    |
 
-Response `201`:
+**Bedrock caveats** — `type: "bedrock"` provisions an
+[`itzg/minecraft-bedrock-server`](https://github.com/itzg/docker-minecraft-bedrock-server)
+container instead of the Java image, with a few differences from every other type:
+
+- The host port is published as **UDP**, not TCP (default `19132`).
+- `mem_min` is ignored (no JVM heap to size), and the usual `mem_max >= mem_min`
+  validation is **not** enforced for `bedrock` — any positive `mem_max` is accepted.
+- There is no RCON, so `POST /api/servers/<id>/command` falls back to the image's
+  `send-command` script — commands are sent but no output is returned.
+- `GET /api/servers/<id>/stats` reports online players differently: `players_online` /
+  `player_count` (log-derived) instead of Java's RCON-sourced `players_raw`. See the
+  endpoint docs below for the log-scan caveat.
+- `GET /api/servers/<id>/players/<username>/statistics` is Java-only — Bedrock has no
+  equivalent stats file (see the endpoint docs below).
+- Minecraft clients discover a Java server's port automatically via a Cloudflare SRV
+  record; Bedrock has no equivalent DNS mechanism, so **no SRV record is created**.
+  Players must enter the connect address *and* port manually in the Bedrock client. The
+  provisioning result includes a `note` field calling this out, and the assigned port is
+  always returned as `external_port`.
+- Whitelisting works for Bedrock, but differently: Bedrock has no runtime "whitelist add"
+  console command at all, so add/remove edit `allowlist.json` directly (works even while
+  the server is stopped) and persist `allow-list=true` to `server.properties` the first
+  time a name is added, so enforcement survives container recreation. All other
+  player-management endpoints under `/api/servers/<id>/players/...`, and the RCON-based
+  parts of backups (world save flush before a backup), are Java-only; they no-op or fail
+  gracefully against a Bedrock server rather than crashing.
+
+Response `202` (provisioning starts in background):
 
 ```json
 {
   "success": true,
-  "message": "Server provisioned successfully",
-  "server_id": 1,
-  "connect_address": "survival-smp.example.com",
-  "tunnel_address": "abc123.mcjoin.link",
-  "external_port": 34567
+  "message": "Server provisioning started",
+  "server_id": 1
 }
 ```
+
+After receiving the `202`, poll `GET /api/servers/<id>/progress` until `percent` reaches
+`100` and `status` is `"completed"`. The full server data (tunnel address, DNS records, etc.)
+is then available via `GET /api/servers/<id>`.
 
 You can apply `server.properties` during setup by including a `properties` object:
 
@@ -430,6 +468,69 @@ If default server properties are configured, they are merged first and request-l
 
 Stops and removes the container, deletes the data directory and all backups, tears down
 the PlayIT tunnel and Cloudflare records, and deletes the database row.
+
+Returns `202` immediately and runs the teardown in the background. Poll
+`GET /api/servers/<id>/progress` until `status` is `"completed"`. The server record
+disappears from `GET /api/servers` when deletion finishes.
+
+```json
+{ "success": true, "message": "Server deletion started", "server_id": 1 }
+```
+
+---
+
+### Server Progress
+
+#### `GET /api/servers/<id>/progress`
+
+Returns live progress for the current (or most recent) provisioning or deletion operation.
+Poll this endpoint after receiving a `202` from `POST /api/servers` or
+`DELETE /api/servers/<id>`.
+
+Example response (during provisioning):
+
+```json
+{
+  "server_id": 1,
+  "action": "provision",
+  "status": "in_progress",
+  "percent": 35,
+  "step": "Creating PlayIT tunnel",
+  "message": null,
+  "updated_at": "2026-07-05T10:00:00+00:00"
+}
+```
+
+`status` values:
+
+| Value         | Meaning                                           |
+| ------------- | ------------------------------------------------- |
+| `idle`        | No operation in progress or recorded              |
+| `in_progress` | Operation is running                              |
+| `completed`   | Operation finished successfully (`percent` = 100) |
+| `failed`      | Operation failed (`message` contains the error)   |
+
+Provisioning steps and approximate percentages:
+
+| %   | Step                                        |
+| --- | ------------------------------------------- |
+| 5   | Database record created                     |
+| 15  | Creating Docker container                   |
+| 35  | Creating PlayIT tunnel                      |
+| 65  | PlayIT tunnel active — creating DNS records |
+| 82  | Creating Cloudflare SRV record              |
+| 100 | Server provisioned successfully             |
+
+Deletion steps:
+
+| %   | Step                      |
+| --- | ------------------------- |
+| 10  | Stopping container        |
+| 30  | Removing server data      |
+| 50  | Deleting PlayIT tunnel(s) |
+| 75  | Removing DNS records      |
+| 92  | Cleaning up database      |
+| 100 | Server deleted            |
 
 ---
 
@@ -456,6 +557,10 @@ container and returns its output.
 ```json
 { "success": true, "message": "Command sent", "output": "" }
 ```
+
+For `bedrock` servers, this uses the image's `send-command` script instead of RCON, since
+Bedrock has no RCON support. The command is sent, but `output` will just confirm delivery
+rather than echo the console's response.
 
 #### `GET /api/servers/<id>/logs?tail=200`
 
@@ -496,6 +601,17 @@ es.addEventListener("log", (e) => console.log(e.data));
 }
 ```
 
+CPU/memory come straight from the Docker Engine API, so they work the same for every
+server type. Player info differs by edition since Bedrock has no RCON:
+
+- Java: `players_raw` — the raw text of RCON's `list` command.
+- Bedrock: `players_online` (array of names) and `player_count` (int) instead, since
+  there's no RCON response to parse. These are reconstructed by scanning the last 5000
+  lines of container logs for the image's `Player connected: <name>, xuid: ...` /
+  `Player disconnected: ...` lines and replaying them in order — a player who joined
+  further back than that window, without a disconnect line inside it, won't show up.
+```
+
 ---
 
 ### Server Modification
@@ -514,7 +630,9 @@ warning that any existing PlayIT tunnel still points at the old port — call
 #### `PATCH /api/servers/<id>/ram`
 
 Body: `{"mem_min": 2, "mem_max": 4}` (GB). Updates the DB then recreates the container with
-new `INIT_MEMORY`/`MAX_MEMORY` values.
+new `INIT_MEMORY`/`MAX_MEMORY` values (`mem_max` becomes a plain container memory cap for
+`bedrock` servers instead, since there's no JVM). `mem_max >= mem_min` is only enforced for
+Java servers — `mem_min` is ignored for `bedrock`, so any positive value is accepted there.
 
 #### `PATCH /api/servers/<id>/version`
 
@@ -523,9 +641,9 @@ World data is preserved on the bind-mounted volume.
 
 Body fields (at least one required):
 
-| Field            | Type           | Notes                                                       |
+| Field | Type | Notes |
 | ---------------- | -------------- | --------------------------------------------------git--------- |
-| `version`        | string         | New Minecraft version, e.g. `"1.21.4"`.                     |
+| `version` | string | New Minecraft version, e.g. `"1.21.4"`. |
 | `loader_version` | string \| null | New loader version. `null` clears it (image picks default). |
 
 Examples:
@@ -632,9 +750,9 @@ the next container start anyway. Restart the server (`POST /<id>/restart`) to ap
 
 | Method   | Path                          | Body                                     | Notes                                                                           |
 | -------- | ----------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
-| `GET`    | `/api/servers/<id>/players`   | —                                        | `{online, whitelist, ops, banned}`. `online` requires the server to be running. |
-| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
-| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
+| `GET`    | `/api/servers/<id>/players`   | —                                        | `{online, whitelist, ops, banned}`. `online` requires the server to be running. `whitelist` reads `allowlist.json` for `bedrock` servers, `whitelist.json` otherwise; `ops` is always empty for `bedrock` (permissions are stored in `permissions.json`, not read yet). |
+| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. For `bedrock`, edits `allowlist.json` directly (works while stopped) and enables `allow-list`. |
+| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. For `bedrock`, edits `allowlist.json` directly (works while stopped). |
 | `POST`   | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
 | `DELETE` | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
 | `POST`   | `/api/servers/<id>/kick`      | `{"username": "Steve", "reason": "AFK"}` | Requires running server.                                                        |
@@ -655,7 +773,7 @@ These are direct per-player actions under `/players/<username>/...`.
 | `DELETE` | `/api/servers/<id>/players/<username>/effects/<effect>` | —                                                    | Removes one specific effect, e.g. `speed` or `minecraft:speed`. Requires the server to be running.               |
 | `GET`    | `/api/servers/<id>/players/<username>/position`         | —                                                    | Returns `{x,y,z}`. Uses live RCON entity data when possible, falls back to playerdata file.                      |
 | `POST`   | `/api/servers/<id>/players/<username>/teleport`         | `{"x": 100.5, "y": 70, "z": -20}`                    | Teleports immediately via RCON when running; updates saved `Pos` in playerdata when stopped.                     |
-| `POST`   | `/api/servers/<id>/players/<username>/whitelist`        | —                                                    | Convenience wrapper for adding to whitelist. Requires running server.                                            |
+| `POST`   | `/api/servers/<id>/players/<username>/whitelist`        | —                                                    | Convenience wrapper for adding to whitelist. Requires running server for Java; works while stopped for `bedrock`. |
 | `POST`   | `/api/servers/<id>/players/<username>/ban`              | `{"reason": "griefing"}`                             | Convenience wrapper for ban command. Requires running server.                                                    |
 | `DELETE` | `/api/servers/<id>/players/<username>/ban`              | —                                                    | Unban. Uses RCON when running, file edit when stopped.                                                           |
 | `POST`   | `/api/servers/<id>/players/<username>/op`               | —                                                    | Convenience wrapper for op command. Requires running server.                                                     |
@@ -817,6 +935,10 @@ Inventory slot ranges: `0-8` hotbar, `9-35` main inventory, `100-103` armor (fee
 
 Returns aggregated player statistics sourced from `world/stats/<uuid>.json`.
 
+**Not available for `bedrock` servers** (returns `404`) — this file format is Java-only.
+Bedrock stores its whole world, including player data, in LevelDB, a different storage
+engine with an undocumented internal key schema, so there's no equivalent file to read.
+
 ```json
 {
   "success": true,
@@ -952,7 +1074,9 @@ POST /api/servers/3/files/upload?path=mods/plugins/custom&filename=my-plugin.jar
 
 Body (all optional): `{"region": "Germany", "subscription": "premium", "agent": "EU-Central"}`.
 Creates a PlayIT tunnel and Cloudflare CNAME + SRV records for an existing server (e.g.
-after a port change).
+after a port change). For `bedrock` servers, only the CNAME is created (no SRV — see the
+Bedrock caveats under `POST /api/servers`), and the tunnel's assigned port must be shared
+with players directly.
 
 #### `PATCH /api/servers/<id>/subdomain`
 

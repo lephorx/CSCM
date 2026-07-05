@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 import docker_manager
+import properties_manager
 from docker_manager import server_data_dir
 from logger import get_logger
 
@@ -98,18 +99,33 @@ def _is_running(server_id: int) -> bool:
     return docker_manager.runtime_status(server_id) not in ("not_created", "stopped")
 
 
+def _is_bedrock(server_id: int) -> bool:
+    return docker_manager.get_server_edition(server_id) == "bedrock"
+
+
+def _whitelist_filename(server_id: int) -> str:
+    # Bedrock's allow-list is a differently-named, differently-shaped file
+    # (allowlist.json, keyed by name/xuid) — there is no whitelist.json.
+    return "allowlist.json" if _is_bedrock(server_id) else "whitelist.json"
+
+
 def get_players(server_id: int) -> dict:
-    whitelist = _read_json(server_id, "whitelist.json")
+    whitelist = _read_json(server_id, _whitelist_filename(server_id))
     ops = _read_json(server_id, "ops.json")
     banned = _read_json(server_id, "banned-players.json")
 
     online = []
     if _is_running(server_id):
         try:
-            output = docker_manager.send_rcon(server_id, "list")
-            match = re.search(r"online:\s*(.*)$", output)
-            if match and match.group(1).strip():
-                online = [name.strip() for name in match.group(1).split(",") if name.strip()]
+            if _is_bedrock(server_id):
+                # No RCON on Bedrock — reconstructed from container log
+                # connect/disconnect lines instead of a `list` command.
+                online = docker_manager.get_bedrock_online_players(server_id)
+            else:
+                output = docker_manager.send_rcon(server_id, "list")
+                match = re.search(r"online:\s*(.*)$", output)
+                if match and match.group(1).strip():
+                    online = [name.strip() for name in match.group(1).split(",") if name.strip()]
         except Exception as exc:
             log.warning("Could not fetch online players for server_id=%d: %s", server_id, exc)
 
@@ -127,7 +143,57 @@ def _require_running(server_id: int) -> tuple[bool, str]:
     return True, ""
 
 
+def _write_json(server_id: int, filename: str, data: list) -> None:
+    path = Path(server_data_dir(server_id)) / filename
+    path.write_text(json.dumps(data, indent=2))
+
+
+def _bedrock_allowlist_reload(server_id: int) -> None:
+    """Best-effort: ask a running server to pick up the edited allowlist.json
+    immediately. If this fails, the file edit still applies on next restart.
+    """
+    if not _is_running(server_id):
+        return
+    try:
+        docker_manager.send_rcon(server_id, "allowlist reload")
+    except Exception as exc:
+        log.warning("allowlist reload failed for server_id=%d: %s", server_id, exc)
+
+
+def _ensure_bedrock_allowlist_enabled(server_id: int) -> None:
+    """Bedrock ignores allowlist.json entirely unless allow-list=true. Persist
+    it to server.properties (survives container recreation) and, best-effort,
+    flip enforcement on immediately if the server is currently running.
+    """
+    try:
+        properties_manager.patch_properties(server_id, {"allow-list": "true"})
+    except Exception as exc:
+        log.warning("Could not set allow-list=true for server_id=%d: %s", server_id, exc)
+    if _is_running(server_id):
+        try:
+            docker_manager.send_rcon(server_id, "allowlist on")
+        except Exception as exc:
+            log.warning("allowlist on failed for server_id=%d: %s", server_id, exc)
+
+
 def whitelist_add(server_id: int, username: str) -> dict:
+    if _is_bedrock(server_id):
+        # Bedrock has no runtime "whitelist add" console command — allowlist.json
+        # is edited directly, which also works while the server is stopped.
+        entries = _read_json(server_id, "allowlist.json")
+        already_present = any(e.get("name", "").lower() == username.lower() for e in entries)
+        if not already_present:
+            entries.append({"name": username, "ignoresPlayerLimit": False})
+            try:
+                _write_json(server_id, "allowlist.json", entries)
+            except OSError as exc:
+                return {"success": False, "message": f"Could not write allowlist.json: {exc}"}
+        _ensure_bedrock_allowlist_enabled(server_id)
+        _bedrock_allowlist_reload(server_id)
+        if already_present:
+            return {"success": True, "message": f"{username} is already on the allowlist"}
+        return {"success": True, "message": f"{username} added to allowlist"}
+
     ok, msg = _require_running(server_id)
     if not ok:
         return {"success": False, "message": msg}
@@ -136,6 +202,19 @@ def whitelist_add(server_id: int, username: str) -> dict:
 
 
 def whitelist_remove(server_id: int, username: str) -> dict:
+    if _is_bedrock(server_id):
+        entries = _read_json(server_id, "allowlist.json")
+        before = len(entries)
+        entries = [e for e in entries if e.get("name", "").lower() != username.lower()]
+        if len(entries) == before:
+            return {"success": True, "message": f"{username} was not on the allowlist"}
+        try:
+            _write_json(server_id, "allowlist.json", entries)
+        except OSError as exc:
+            return {"success": False, "message": f"Could not write allowlist.json: {exc}"}
+        _bedrock_allowlist_reload(server_id)
+        return {"success": True, "message": f"{username} removed from allowlist"}
+
     ok, msg = _require_running(server_id)
     if not ok:
         return {"success": False, "message": msg}
@@ -615,6 +694,17 @@ def teleport_player(server_id: int, username: str, x: float, y: float, z: float)
 # ── Statistics ────────────────────────────────────────────────────────────────
 
 def get_player_statistics(server_id: int, username: str) -> dict:
+    if _is_bedrock(server_id):
+        # Bedrock has no equivalent of Java's world/stats/<uuid>.json — it
+        # stores the whole world (including player data) in LevelDB, a
+        # different storage engine with an undocumented internal schema.
+        # Not supported rather than silently wrong.
+        return {
+            "success": False,
+            "message": "Per-player statistics are not available for Bedrock servers "
+                       "(Bedrock stores player data in LevelDB, not per-player stats files)",
+        }
+
     uuid = _lookup_uuid(server_id, username)
     if not uuid:
         return {

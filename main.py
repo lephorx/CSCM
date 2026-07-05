@@ -24,9 +24,9 @@ def main() -> None:
         description="Provision a Minecraft server (Docker), PlayIT tunnel, and Cloudflare DNS."
     )
     parser.add_argument("--name",    default="Minecraft test server",   help="Server display name")
-    parser.add_argument("--type",    default="paper", choices=list(SERVER_TYPES.keys()), help="Server flavour")
-    parser.add_argument("--version", default="1.21.4",                  help="Minecraft version")
-    parser.add_argument("--port",    type=int, default=25565,           help="Local server port")
+    parser.add_argument("--type",    default="paper", choices=list(SERVER_TYPES.keys()), help="Server flavour (includes 'bedrock')")
+    parser.add_argument("--version", default="1.21.4",                  help="Minecraft version (use 'LATEST' for bedrock)")
+    parser.add_argument("--port",    type=int, default=25565,           help="Local server port (19132 is bedrock's default)")
     parser.add_argument("--mem-min", type=int, default=2,               help="Minimum JVM heap (GB)")
     parser.add_argument("--mem-max", type=int, default=4,               help="Maximum JVM heap (GB)")
     args = parser.parse_args()

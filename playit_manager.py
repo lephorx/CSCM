@@ -5,8 +5,9 @@ PlayIT tunnel automation module.
 Drives a headless Chromium browser to log into playit.gg and manage tunnels.
 
 Public functions:
-    create_tunnel(tunnel_name, tunnel_port) -> str | None
-        Provision a new Minecraft Java tunnel and return its public address.
+    create_tunnel(tunnel_name, tunnel_port, protocol="java") -> str | None
+        Provision a new Minecraft Java or Bedrock tunnel and return its
+        public address.
 
     delete_tunnel(tunnel_name) -> bool
         Delete an existing tunnel by its display name.
@@ -36,10 +37,10 @@ TUNNEL_PORT         = os.getenv("TUNNEL_PORT", "25565")
 TIMEOUT = 30000
 
 
-async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None, subscription: str | None = None, agent: str | None = None) -> str | None:
+async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | None = None, subscription: str | None = None, agent: str | None = None, protocol: str = "java") -> str | None:
     """Create a PlayIT tunnel with the given name and local port.
 
-    Drives the playit.gg web UI to provision a new Minecraft Java tunnel.
+    Drives the playit.gg web UI to provision a new Minecraft tunnel.
 
     Args:
         tunnel_name: Human-readable label for the tunnel (used as the tunnel
@@ -51,10 +52,15 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
                 Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
         agent: Agent name to use for the tunnel (e.g., "US-East", "EU-Central").
                Defaults to PLAYIT_AGENT env var or first available agent.
+        protocol: "java" or "bedrock" — selects the matching protocol tile
+                  in the playit.gg tunnel wizard.
 
     Returns:
-        The allocated public address (e.g. ``abc.deu.mcjoin.link``),
-        or ``None`` on failure.
+        The allocated public address — e.g. ``abc123.joinmc.link`` for Java
+        (no port; SRV discovery handles that), or e.g.
+        ``cheap-throughout.deu.at.playit.plus:1037`` for Bedrock, which has
+        no SRV-based port discovery so playit embeds the port directly.
+        ``None`` on failure.
     """
     if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
         log.error("PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables are required")
@@ -63,6 +69,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
     selected_region = region or PLAYIT_REGION
     selected_subscription = (subscription or PLAYIT_SUBSCRIPTION).lower()
     selected_agent = agent or PLAYIT_AGENT
+    selected_protocol = (protocol or "java").lower()
 
     headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
     log.debug("Browser headless mode: %s", headless)
@@ -110,9 +117,20 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
             await page.click('button[type="submit"]')
             await asyncio.sleep(1)
 
-            # Select Minecraft Java protocol
-            log.debug("Selecting Minecraft Java protocol")
-            await page.click('div._15pr4g97')
+            # Select protocol tile. All protocol tiles share the "_15pr4g97"
+            # class (e.g. <div class="_15pr4g97"><img .../><span
+            # class="_15pr4g9d">Minecraft Bedrock</span></div>); the label
+            # text is what distinguishes them, so filter on it explicitly
+            # rather than relying on DOM order.
+            protocol_label = "Minecraft Bedrock" if selected_protocol == "bedrock" else "Minecraft Java"
+            log.debug("Selecting %s protocol", protocol_label)
+            try:
+                await page.click(f'div._15pr4g97:has-text("{protocol_label}")', timeout=TIMEOUT)
+            except PlaywrightTimeoutError:
+                log.warning("Could not find '%s' protocol tile via CSS selector; trying text search", protocol_label)
+                if not await _click_by_text(page, protocol_label):
+                    log.warning("Falling back to first protocol tile — may select the wrong protocol")
+                    await page.click('div._15pr4g97')
             await asyncio.sleep(1)
             await page.click('button[type="submit"]')
             await asyncio.sleep(1)
@@ -162,12 +180,17 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
             await asyncio.sleep(2)
 
             log.info("Waiting for tunnel address allocation")
+            # Java addresses look like "abc123.joinmc.link" (no port — SRV
+            # discovery handles that); Bedrock addresses embed the port
+            # directly, e.g. "cheap-throughout.deu.at.playit.plus:1037".
+            # Match on the general host[:port] shape instead of hardcoding
+            # domain suffixes, since the two protocols use different domains.
             await page.wait_for_function("""
                 () => {
                     const el = document.querySelector('span.lm6flc4');
-                    return el && (el.textContent.includes('.mcjoin.link') || el.textContent.includes('.joinmc.link'))
-                        ? el.textContent.trim()
-                        : null;
+                    if (!el) return null;
+                    const text = el.textContent.trim();
+                    return /^[\\w.-]+\\.[a-z]{2,}(?::\\d+)?$/i.test(text) ? text : null;
                 }
             """, timeout=TIMEOUT * 2)
 
@@ -186,6 +209,53 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
     except Exception as exc:
         log.exception("Unexpected error during tunnel creation: %s", exc)
         return None
+
+
+async def _click_by_text(page, text: str) -> bool:
+    """Best-effort click on any element containing the given visible text.
+
+    Used for UI elements (like protocol tiles) whose CSS classes are
+    generated build hashes and can't be relied on across playit.gg deploys.
+    """
+    try:
+        locator = page.get_by_text(text, exact=False)
+        if await locator.count() > 0:
+            await locator.first.click(timeout=4000)
+            return True
+    except Exception:
+        pass
+
+    try:
+        return await page.evaluate(
+            """
+            (text) => {
+                const walker = document.createTreeWalker(
+                    document.body, NodeFilter.SHOW_TEXT, null, false
+                );
+                let node;
+                while ((node = walker.nextNode())) {
+                    if (node.textContent.trim().includes(text)) {
+                        let el = node.parentElement;
+                        for (let i = 0; i < 6 && el; i++) {
+                            const tag = el.tagName;
+                            const role = el.getAttribute('role') || '';
+                            const cur = window.getComputedStyle(el).cursor;
+                            if (tag === 'BUTTON' || tag === 'A' ||
+                                role === 'button' || cur === 'pointer') {
+                                el.click();
+                                return true;
+                            }
+                            el = el.parentElement;
+                        }
+                    }
+                }
+                return false;
+            }
+            """,
+            text,
+        )
+    except Exception:
+        return False
 
 
 async def _select_agent(page, agent_name: str | None) -> bool:
