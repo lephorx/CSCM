@@ -81,6 +81,19 @@ export const api = {
         body: JSON.stringify({ properties }),
       }),
   },
+  bedrock: {
+    getProperties: (id: number) => apiCall(`/servers/${id}/bedrock/properties`),
+    patchProperties: (id: number, properties: Record<string, string>) =>
+      apiCall(`/servers/${id}/bedrock/properties`, {
+        method: "PATCH",
+        body: JSON.stringify({ properties }),
+      }),
+    setCheats: (id: number, enabled: boolean) =>
+      apiCall(`/servers/${id}/bedrock/cheats`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      }),
+  },
   players: {
     list: (id: number) => apiCall(`/servers/${id}/players`),
     whitelistAdd: (id: number, username: string) =>

@@ -1516,105 +1516,88 @@ export function PlayersPanel({ serverId, isRunning, serverType }: Props) {
           />
         </Section>
 
-        {/* Banned */}
-        <Section title="Banned" count={banned.length}>
-          <div className="flex flex-col gap-1.5">
-            {banned.length === 0 ? (
-              <EmptyRow label="No banned players" />
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {banned.map((p: BannedPlayer) => {
-                  const name = playerName(p)
-                  return (
-                    <li
-                      key={name}
-                      className="flex items-center justify-between gap-2"
-                    >
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5 text-sm">
-                          <Ban className="size-3 text-destructive" />
-                          {name}
-                        </span>
-                        {p.reason && (
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {p.reason}
-                          </span>
-                        )}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 shrink-0 px-2 text-xs"
-                        disabled={pending === `ban-rm-${name}`}
-                        onClick={() => {
-                          withPending(`ban-rm-${name}`, () =>
-                            api.players.banRemove(serverId, name)
-                          )
-                        }}
+        {/* Banned — Bedrock has no ban/pardon command or ban list, so nothing to show here */}
+        {!isBedrock && (
+          <Section title="Banned" count={banned.length}>
+            <div className="flex flex-col gap-1.5">
+              {banned.length === 0 ? (
+                <EmptyRow label="No banned players" />
+              ) : (
+                <ul className="flex flex-col gap-1.5">
+                  {banned.map((p: BannedPlayer) => {
+                    const name = playerName(p)
+                    return (
+                      <li
+                        key={name}
+                        className="flex items-center justify-between gap-2"
                       >
-                        {pending === `ban-rm-${name}` ? (
-                          <Loader2 className="size-3 animate-spin" />
-                        ) : (
-                          "Unban"
-                        )}
-                      </Button>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </div>
-          <AddRow
-            placeholder="Username to ban"
-            disabled={!isRunning}
-            onAdd={(username) =>
-              withPending("ban-add", () =>
-                api.players.banAdd(serverId, username)
-              )
-            }
-          />
-        </Section>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-1.5 text-sm">
+                            <Ban className="size-3 text-destructive" />
+                            {name}
+                          </span>
+                          {p.reason && (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {p.reason}
+                            </span>
+                          )}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 shrink-0 px-2 text-xs"
+                          disabled={pending === `ban-rm-${name}`}
+                          onClick={() => {
+                            withPending(`ban-rm-${name}`, () =>
+                              api.players.banRemove(serverId, name)
+                            )
+                          }}
+                        >
+                          {pending === `ban-rm-${name}` ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            "Unban"
+                          )}
+                        </Button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+            <AddRow
+              placeholder="Username to ban"
+              disabled={!isRunning}
+              onAdd={(username) =>
+                withPending("ban-add", () =>
+                  api.players.banAdd(serverId, username)
+                )
+              }
+            />
+          </Section>
+        )}
       </div>
 
-      {/* Player History */}
-      <div className="border border-border p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            <Clock className="size-3" />
-            Player History
-          </h3>
-          <span className="text-xs text-muted-foreground">
-            {history.length}
-          </span>
-        </div>
+      {/* Player History — sourced from usercache.json, which is Java-only */}
+      {!isBedrock && (
+        <div className="border border-border p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              <Clock className="size-3" />
+              Player History
+            </h3>
+            <span className="text-xs text-muted-foreground">
+              {history.length}
+            </span>
+          </div>
 
-        {history.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            No players have joined yet.
-          </p>
-        ) : (
-          <div className="grid gap-0.5 sm:grid-cols-2 lg:grid-cols-3">
-            {history.map((p) =>
-              isBedrock ? (
-                <div
-                  key={p.uuid}
-                  className="flex items-center gap-2 rounded px-2 py-1.5 text-left"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={playerHeadUrl(p.name)}
-                    alt={p.name}
-                    className="size-6 rounded-sm"
-                    style={{ imageRendering: "pixelated" }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium">{p.name}</p>
-                    <p className="truncate text-[10px] text-muted-foreground">
-                      {new Date(p.last_seen).toLocaleDateString()}
-                    </p>
-                  </div>
-                </div>
-              ) : (
+          {history.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No players have joined yet.
+            </p>
+          ) : (
+            <div className="grid gap-0.5 sm:grid-cols-2 lg:grid-cols-3">
+              {history.map((p) => (
                 <button
                   key={p.uuid}
                   className="flex items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-muted/60"
@@ -1635,11 +1618,11 @@ export function PlayersPanel({ serverId, isRunning, serverType }: Props) {
                   </div>
                   <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
                 </button>
-              )
-            )}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

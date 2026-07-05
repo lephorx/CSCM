@@ -35,6 +35,10 @@ import { api } from "@/lib/api"
 import type { CreateServerPayload, Server } from "@/lib/types"
 import type { CreationTask } from "@/hooks/useServerCreation"
 import { VersionPicker } from "@/components/VersionPicker"
+import {
+  JAVA_PROPERTY_KEYS,
+  BEDROCK_PROPERTY_KEYS,
+} from "@/lib/minecraftProperties"
 
 const PORT_MIN = 1024
 const PORT_MAX = 65535
@@ -177,20 +181,35 @@ export function ServerCreateModal({
         setUsedPorts(new Set(list.map((s) => s.port)))
       })
       .catch(() => {})
+  }, [open])
+
+  // Load default properties, filtered to whichever edition is currently
+  // selected — Java and Bedrock server.properties keys are almost entirely
+  // different, so showing both sets mixed together is confusing (and a
+  // Bedrock-only key silently does nothing on a Java server, or vice versa).
+  // Re-runs whenever the server type changes so switching types shows the
+  // right set instead of leftovers from the previous edition.
+  useEffect(() => {
+    if (!open) return
+    const isBedrock = form.type === "bedrock"
+    const allowedKeys = isBedrock ? BEDROCK_PROPERTY_KEYS : JAVA_PROPERTY_KEYS
+    const otherEditionKeys = isBedrock ? JAVA_PROPERTY_KEYS : BEDROCK_PROPERTY_KEYS
 
     api.defaults
       .getProperties()
       .then((res) => {
         const p: Record<string, string> = res?.properties ?? {}
         setProps(
-          Object.entries(p).map(([key, value]) => ({
-            key,
-            value: String(value),
-          }))
+          Object.entries(p)
+            // Drop keys known to belong to the *other* edition; keep
+            // matching keys and anything unrecognized (e.g. a mod-specific
+            // key we don't have in our reference list).
+            .filter(([key]) => !otherEditionKeys.has(key) || allowedKeys.has(key))
+            .map(([key, value]) => ({ key, value: String(value) }))
         )
       })
       .catch(() => {})
-  }, [open])
+  }, [open, form.type])
 
   // Debounced port availability check
   useEffect(() => {

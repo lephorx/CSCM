@@ -80,6 +80,12 @@ export default function ServerDetailPage() {
   })
   const [editSaving, setEditSaving] = useState(false)
   const [portError, setPortError] = useState("")
+
+  // Bedrock-only: allow-cheats toggle
+  const [cheatsEnabled, setCheatsEnabled] = useState<boolean | null>(null)
+  const [cheatsConfirmOpen, setCheatsConfirmOpen] = useState(false)
+  const [cheatsSaving, setCheatsSaving] = useState(false)
+
   const router = useRouter()
   const searchParams = useSearchParams()
   const VALID_TABS = [
@@ -123,7 +129,16 @@ export default function ServerDetailPage() {
       .then((res) => {
         const found: Server | undefined = res?.server ?? res?.data ?? res
         if (!found) return notFound()
-        setServer(normalizeServer(found))
+        const normalized = normalizeServer(found)
+        setServer(normalized)
+        if (normalized.type === "bedrock") {
+          api.bedrock
+            .getProperties(serverId)
+            .then((r) =>
+              setCheatsEnabled(r?.properties?.["allow-cheats"] === "true")
+            )
+            .catch(() => {})
+        }
       })
       .catch(() => toast.error("Failed to load server"))
       .finally(() => setLoadingServer(false))
@@ -181,6 +196,23 @@ export default function ServerDetailPage() {
     const res = await api.servers.get(serverId)
     const found: Server | undefined = res?.server ?? res?.data ?? res
     if (found) setServer(normalizeServer(found))
+  }
+
+  async function handleToggleCheats() {
+    const next = !cheatsEnabled
+    setCheatsConfirmOpen(false)
+    setCheatsSaving(true)
+    try {
+      await api.bedrock.setCheats(serverId, next)
+      setCheatsEnabled(next)
+      toast.success(`Cheats ${next ? "enabled" : "disabled"} — server restarted`)
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to change cheats setting"
+      )
+    } finally {
+      setCheatsSaving(false)
+    }
   }
 
   async function handleSetupTunnel() {
@@ -582,6 +614,36 @@ export default function ServerDetailPage() {
                   )}
                 </div>
               ))}
+
+              {/* Cheats — Bedrock only. allow-cheats is only read at server
+                  startup, so toggling it always restarts the container. */}
+              {server.type === "bedrock" && (
+                <div className="flex items-center justify-between px-6 py-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Cheats</p>
+                    <p className="text-sm font-medium">
+                      {cheatsEnabled === null
+                        ? "Loading…"
+                        : cheatsEnabled
+                          ? "Enabled"
+                          : "Disabled"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={cheatsEnabled === null || cheatsSaving}
+                    onClick={() => setCheatsConfirmOpen(true)}
+                  >
+                    {cheatsSaving ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Pencil className="size-3.5" />
+                    )}
+                    {cheatsEnabled ? "Disable" : "Enable"}
+                  </Button>
+                </div>
+              )}
             </div>
           </TabsContent>
         </Tabs>
@@ -623,6 +685,38 @@ export default function ServerDetailPage() {
               }}
             >
               {confirmAction === "kill" ? "Kill" : "Stop"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bedrock cheats toggle confirm */}
+      <Dialog
+        open={cheatsConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) setCheatsConfirmOpen(false)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {cheatsEnabled ? "Disable Cheats" : "Enable Cheats"}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {`allow-cheats is only read when the server starts up, so this will
+            restart the server to apply the change. Players will be
+            disconnected briefly.`}
+          </p>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setCheatsConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleToggleCheats}>
+              {cheatsEnabled ? "Disable & Restart" : "Enable & Restart"}
             </Button>
           </DialogFooter>
         </DialogContent>
