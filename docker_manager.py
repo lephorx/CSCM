@@ -319,8 +319,13 @@ def stream_logs(server_id: int):
 # The console output is colorized (ANSI SGR codes), so a code sitting right
 # where the name is expected can get captured as the "name" — e.g. a bare
 # reset code rendered as the literal text "[0m". Strip ANSI escapes before
-# matching so that can't happen.
+# matching so that can't happen. Docker's log API has also been observed to
+# drop the leading ESC (0x1b) byte on some lines while leaving the rest of
+# the escape sequence ("[0m") intact as plain text, which _strip_ansi alone
+# wouldn't catch — _looks_like_ansi_noise() is a second, ESC-independent
+# check against exactly that residual shape.
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_ANSI_RESIDUE_RE = re.compile(r"^\[?[0-9;]*[A-Za-z]$")
 _BEDROCK_CONNECT_RE = re.compile(r"Player connected: ([^,]+), xuid: (\d+)")
 _BEDROCK_DISCONNECT_RE = re.compile(r"Player disconnected: ([^,]+), xuid: (\d+)")
 _BEDROCK_LOG_SCAN_LINES = 5000
@@ -328,6 +333,12 @@ _BEDROCK_LOG_SCAN_LINES = 5000
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def _looks_like_ansi_noise(name: str) -> bool:
+    """True for residual ANSI escape fragments like "[0m", "0m", "[1;33m" —
+    never a real Bedrock gamertag."""
+    return bool(_ANSI_RESIDUE_RE.match(name))
 
 
 def get_bedrock_player_xuid(server_id: int, username: str) -> str | None:
@@ -345,7 +356,12 @@ def get_bedrock_player_xuid(server_id: int, username: str) -> str | None:
     xuid = None
     for line in text.splitlines():
         match = _BEDROCK_CONNECT_RE.search(line)
-        if match and match.group(1).strip().lower() == username.lower():
+        if not match:
+            continue
+        name = match.group(1).strip()
+        if _looks_like_ansi_noise(name):
+            continue
+        if name.lower() == username.lower():
             xuid = match.group(2)
     return xuid
 
@@ -367,7 +383,7 @@ def get_bedrock_online_players(server_id: int) -> list[str]:
         match = _BEDROCK_CONNECT_RE.search(line)
         if match:
             name = match.group(1).strip()
-            if name:
+            if name and not _looks_like_ansi_noise(name):
                 online[name] = None
             continue
         match = _BEDROCK_DISCONNECT_RE.search(line)
