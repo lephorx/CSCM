@@ -441,12 +441,74 @@ paths:
         "404": { description: Not found }
         "500": { description: Container recreate failed }
 
+  /api/servers/{id}/bedrock/cheats:
+    patch:
+      tags: [Modification]
+      summary: Enable/disable cheats on a Bedrock server (restarts the container)
+      description: >
+        Bedrock-only (400 for any other type). Sets allow-cheats in
+        server.properties and restarts the container, since that property is
+        only read at startup — there is no live console toggle for it.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200": { description: OK }
+        "400": { description: "'enabled' not a boolean, or server is not type bedrock" }
+        "404": { description: Not found, or server.properties not yet created }
+        "500": { description: Property updated but container restart failed }
+
   /api/servers/{id}/properties:
     get:
       tags: [Properties]
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       responses:
         { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/bedrock/properties:
+    get:
+      tags: [Properties]
+      summary: Get a Bedrock server's server.properties
+      description: Bedrock-only (400 for any other type). Same response shape as GET /api/servers/{id}/properties.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        {
+          "200": { description: OK },
+          "400": { description: Not a bedrock server },
+          "404": { description: Not found },
+        }
+    patch:
+      tags: [Properties]
+      summary: Patch a Bedrock server's server.properties (validated)
+      description: >
+        Bedrock-only (400 for any other type). Like PATCH /api/servers/{id}/properties,
+        but every key/value is checked against Bedrock's actual property list
+        (itzg/docker-minecraft-bedrock-server's property-definitions.json) instead
+        of accepting anything — unknown keys or invalid enum values are rejected.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+                  example: { "allow-cheats": "true", "difficulty": "hard" }
+      responses:
+        "200": { description: OK }
+        "400": { description: Not a bedrock server, missing body, or no valid properties in request }
+        "404": { description: Not found, or server.properties not yet created }
 
   /api/defaults/properties:
     get:
@@ -591,35 +653,53 @@ paths:
   /api/servers/{id}/whitelist:
     post:
       tags: [Players]
+      summary: Add a player to the whitelist/allowlist
+      description: >
+        Java: RCON "whitelist add", requires a running server. Bedrock: the real
+        "allowlist add" console command when running (verified by re-reading
+        allowlist.json since send-command has no output), or a direct
+        allowlist.json edit when stopped. See README "Bedrock whitelist & op
+        tracking" for details.
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody: { $ref: "#/components/requestBodies/Username" }
       responses:
         {
           "200": { description: OK },
-          "409": { description: Server not running },
+          "409": { description: Server not running (Java only) },
         }
     delete:
       tags: [Players]
+      summary: Remove a player from the whitelist/allowlist
+      description: >
+        Java: RCON "whitelist remove". Bedrock: "allowlist remove" console
+        command when running, direct allowlist.json edit when stopped.
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody: { $ref: "#/components/requestBodies/Username" }
       responses:
         {
           "200": { description: OK },
-          "409": { description: Server not running },
+          "409": { description: Server not running (Java only) },
         }
 
   /api/servers/{id}/ops:
     post:
       tags: [Players]
+      summary: Grant operator status
+      description: >
+        Java: RCON "op". Bedrock: "op" console command, requires the server
+        running AND the player to have connected at least once (Bedrock's
+        permissions.json is keyed by XUID only, resolved from connect logs).
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody: { $ref: "#/components/requestBodies/Username" }
       responses:
         {
           "200": { description: OK },
-          "409": { description: Server not running },
+          "409": { description: Server not running, or (Bedrock) player has never connected },
         }
     delete:
       tags: [Players]
+      summary: Revoke operator status
+      description: "Java: RCON \"deop\". Bedrock: \"deop\" console command, requires the server running."
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody: { $ref: "#/components/requestBodies/Username" }
       responses:

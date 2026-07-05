@@ -56,3 +56,19 @@ CREATE TABLE IF NOT EXISTS backup_schedules (
     enabled     INTEGER NOT NULL DEFAULT 1,
     backup_type TEXT NOT NULL DEFAULT 'zip'
 );
+
+-- Bedrock has no per-player stats files (world data lives in LevelDB, not
+-- readable JSON/NBT), so whitelist/operator changes made through the API are
+-- logged here as an audit trail. Current status is derived by taking the
+-- latest event per (server_id, username, whitelist|op) pair.
+CREATE TABLE IF NOT EXISTS bedrock_player_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id  INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    username   TEXT NOT NULL,
+    xuid       TEXT,
+    event_type TEXT NOT NULL, -- whitelist_add | whitelist_remove | op_add | op_remove
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_bedrock_player_events_lookup
+    ON bedrock_player_events (server_id, username, event_type, id);

@@ -557,3 +557,51 @@ def update_server_version(server_id: int):
         "version":        updated_row["version"],
         "loader_version": dict(updated_row).get("loader_version"),
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/bedrock/cheats
+# Body: { "enabled": true }
+#
+# Bedrock-only. Sets allow-cheats in server.properties and restarts the
+# container so it takes effect — allow-cheats is only read at server
+# startup, there's no live console toggle for it (unlike allow-list).
+# ---------------------------------------------------------------------------
+@servers_bp.route("/servers/<int:server_id>/bedrock/cheats", methods=["PATCH"])
+def update_bedrock_cheats(server_id: int):
+    auth_err = authorize()
+    if auth_err:
+        return auth_err
+
+    with get_db() as conn:
+        row = conn.execute("SELECT type FROM servers WHERE id = ?", (server_id,)).fetchone()
+    if not row:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+    if row["type"] != "bedrock":
+        return jsonify({"success": False, "message": "This endpoint is for 'bedrock' servers only"}), 400
+
+    body = request.get_json(silent=True) or {}
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        return jsonify({"success": False, "message": "'enabled' must be a boolean"}), 400
+
+    result = properties_manager.patch_properties(server_id, {"allow-cheats": "true" if enabled else "false"})
+    if result.get("error"):
+        return jsonify({"success": False, "message": result["error"]}), 404
+
+    try:
+        restart_ok, restart_msg = docker_manager.restart_server(server_id)
+    except Exception as exc:
+        restart_ok, restart_msg = False, str(exc)
+    if not restart_ok:
+        return jsonify({
+            "success": False,
+            "message": f"allow-cheats set to {str(enabled).lower()} but restart failed: {restart_msg}",
+        }), 500
+
+    log.info("Bedrock cheats %s: db_id=%d", "enabled" if enabled else "disabled", server_id)
+    return jsonify({
+        "success": True,
+        "message": f"Cheats {'enabled' if enabled else 'disabled'}, server restarted",
+        "enabled": enabled,
+    }), 200

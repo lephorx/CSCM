@@ -180,10 +180,13 @@ authentication data. Initialize it with:
 python scripts/init_db.py
 ```
 
-This creates `servers`, `playit_tunnels`, `dns_records`, `backups`, `backup_schedules`
-(app data) and `users`, `app_config` (auth data, created by `auth_manager`). `app.py` also
-calls this automatically on startup, so a manual run is only needed for local development
-outside Docker.
+This creates `servers`, `playit_tunnels`, `dns_records`, `backups`, `backup_schedules`,
+`bedrock_player_events` (app data) and `users`, `app_config` (auth data, created by
+`auth_manager`). `app.py` also calls this automatically on startup, so a manual run is only
+needed for local development outside Docker.
+
+`bedrock_player_events` is an audit log of whitelist/op changes made through the API for
+`bedrock` servers — see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking).
 
 ## Authentication
 
@@ -417,20 +420,25 @@ container instead of the Java image, with a few differences from every other typ
 - `GET /api/servers/<id>/stats` reports online players differently: `players_online` /
   `player_count` (log-derived) instead of Java's RCON-sourced `players_raw`. See the
   endpoint docs below for the log-scan caveat.
-- `GET /api/servers/<id>/players/<username>/statistics` is Java-only — Bedrock has no
-  equivalent stats file (see the endpoint docs below).
+- `GET /api/servers/<id>/players/<username>/statistics` reports something different for
+  Bedrock — whitelist/operator status instead of Java's gameplay counters (blocks mined,
+  playtime, etc., which don't exist for Bedrock). See the endpoint docs below.
 - Minecraft clients discover a Java server's port automatically via a Cloudflare SRV
   record; Bedrock has no equivalent DNS mechanism, so **no SRV record is created**.
   Players must enter the connect address *and* port manually in the Bedrock client. The
   provisioning result includes a `note` field calling this out, and the assigned port is
   always returned as `external_port`.
-- Whitelisting works for Bedrock, but differently: Bedrock has no runtime "whitelist add"
-  console command at all, so add/remove edit `allowlist.json` directly (works even while
-  the server is stopped) and persist `allow-list=true` to `server.properties` the first
-  time a name is added, so enforcement survives container recreation. All other
-  player-management endpoints under `/api/servers/<id>/players/...`, and the RCON-based
-  parts of backups (world save flush before a backup), are Java-only; they no-op or fail
-  gracefully against a Bedrock server rather than crashing.
+- Whitelisting and op/deop work for Bedrock, but differently — see
+  [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) below. All other
+  player-management endpoints under `/api/servers/<id>/players/...` (bans, kicks, gamemode,
+  NBT/inventory edits, etc.), and the RCON-based parts of backups (world save flush before
+  a backup), are Java-only; they no-op or fail gracefully against a Bedrock server rather
+  than crashing.
+- `server.properties` has its own dedicated, validated endpoint pair —
+  `GET`/`PATCH /api/servers/<id>/bedrock/properties` — since Bedrock's property keys are
+  almost entirely different from Java's. `PATCH /api/servers/<id>/bedrock/cheats` is a
+  convenience wrapper for the `allow-cheats` property that also restarts the container,
+  since that property only takes effect on startup.
 
 Response `202` (provisioning starts in background):
 
@@ -666,6 +674,24 @@ Response:
 }
 ```
 
+#### `PATCH /api/servers/<id>/bedrock/cheats`
+
+**Bedrock-only** (`400` for any other type). Sets `allow-cheats` in `server.properties`
+and restarts the container so it takes effect — `allow-cheats` is only read at server
+startup; there's no live console toggle for it (unlike `allow-list`).
+
+Body:
+
+```json
+{ "enabled": true }
+```
+
+Response:
+
+```json
+{ "success": true, "message": "Cheats enabled, server restarted", "enabled": true }
+```
+
 ---
 
 ### server.properties
@@ -742,6 +768,55 @@ Keys pinned by the container's environment variables (`server-port`, `enable-rco
 `rcon.port`, `rcon.password`) are rejected — they'd be silently overwritten by the image on
 the next container start anyway. Restart the server (`POST /<id>/restart`) to apply changes.
 
+This endpoint works against any server type (it's a generic key=value file editor), but
+Java and Bedrock `server.properties` have almost entirely different key sets — Bedrock has
+`allow-cheats`, `level-type`, `server-authoritative-movement`, etc., none of which exist on
+Java, and Java's `motd`/`pvp`/`spawn-protection`/etc. don't exist on Bedrock either. This
+endpoint doesn't validate keys against either edition, so a typo or a Java-only key sent to
+a Bedrock server (or vice versa) is written to the file and silently ignored by the server.
+For Bedrock, prefer the dedicated, validated endpoint below instead.
+
+#### `GET /api/servers/<id>/bedrock/properties`
+
+**Bedrock-only** (`400` for any other type). Same response shape as
+`GET /api/servers/<id>/properties` above — a separate endpoint mainly so `PATCH` (below)
+can validate against Bedrock's actual key set.
+
+#### `PATCH /api/servers/<id>/bedrock/properties`
+
+**Bedrock-only** (`400` for any other type). Like `PATCH /api/servers/<id>/properties`,
+but every key is checked against Bedrock's real property list — 60 keys, sourced from
+[itzg/docker-minecraft-bedrock-server's `property-definitions.json`](https://github.com/itzg/docker-minecraft-bedrock-server/blob/master/property-definitions.json)
+— and keys with a fixed set of allowed values (e.g. `gamemode`, `difficulty`,
+`allow-cheats`, `level-type`) are checked against those too. Anything else (unknown key,
+or a value not in its allowed set) is rejected instead of being written to the file.
+
+Body: `{"properties": {"allow-cheats": "true", "difficulty": "hard"}}`.
+
+```json
+{
+  "success": true,
+  "changed": ["allow-cheats", "difficulty"],
+  "rejected": [],
+  "restart_required": true
+}
+```
+
+If every key in the request is invalid, `changed` is empty and the response also includes
+`"error": "No valid Bedrock properties in request"`. Some notable Bedrock-only keys:
+
+| Key | Allowed values | Notes |
+| --- | --- | --- |
+| `allow-cheats` | `true` \| `false` | Prefer `PATCH /api/servers/<id>/bedrock/cheats` instead — it also restarts the container for you. |
+| `gamemode` | `survival` \| `creative` \| `adventure` | |
+| `difficulty` | `peaceful` \| `easy` \| `normal` \| `hard` | |
+| `level-type` | `DEFAULT` \| `FLAT` \| `LEGACY` | |
+| `default-player-permission-level` | `visitor` \| `member` \| `operator` | |
+| `allow-list` | `true` \| `false` | Prefer the whitelist endpoints instead (see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking)) — they also keep `allowlist.json` in sync. |
+
+As with the generic endpoint, restart the server to apply changes — except for
+`allow-cheats`, which the dedicated `/bedrock/cheats` endpoint already does for you.
+
 ---
 
 ### Players
@@ -750,12 +825,12 @@ the next container start anyway. Restart the server (`POST /<id>/restart`) to ap
 
 | Method   | Path                          | Body                                     | Notes                                                                           |
 | -------- | ----------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
-| `GET`    | `/api/servers/<id>/players`   | —                                        | `{online, whitelist, ops, banned}`. `online` requires the server to be running. `whitelist` reads `allowlist.json` for `bedrock` servers, `whitelist.json` otherwise; `ops` is always empty for `bedrock` (permissions are stored in `permissions.json`, not read yet). |
-| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. For `bedrock`, edits `allowlist.json` directly (works while stopped) and enables `allow-list`. |
-| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. For `bedrock`, edits `allowlist.json` directly (works while stopped). |
-| `POST`   | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
-| `DELETE` | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server.                                       |
-| `POST`   | `/api/servers/<id>/kick`      | `{"username": "Steve", "reason": "AFK"}` | Requires running server.                                                        |
+| `GET`    | `/api/servers/<id>/players`   | —                                        | `{online, whitelist, ops, banned}`. `online` requires the server to be running. `whitelist` reads live `allowlist.json` for `bedrock` (`whitelist.json` for Java); `ops` for `bedrock` is derived from tracked events, not a file (see below). |
+| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `POST`   | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `DELETE` | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `POST`   | `/api/servers/<id>/kick`      | `{"username": "Steve", "reason": "AFK"}` | Requires running server. Java-only — Bedrock's console kick isn't wired up yet. |
 
 #### Per-player action endpoints
 
@@ -764,7 +839,7 @@ These are direct per-player actions under `/players/<username>/...`.
 | Method   | Path                                                    | Body                                                 | Notes                                                                                                            |
 | -------- | ------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `POST`   | `/api/servers/<id>/players/<username>/gamemode`         | `{"game_mode": "creative"}` or `{"game_mode": 1}`    | Accepts `0-3` or `survival/creative/adventure/spectator`. Uses RCON when running, edits player NBT when stopped. |
-| `POST`   | `/api/servers/<id>/players/<username>/kill`             | —                                                    | Runs `/kill <username>`. Requires running server.                                                                |
+| `POST`   | `/api/servers/<id>/players/<username>/kill`             | `{"message": "Rest in peace"}` (optional)             | Runs `/kill <username>`. Requires running server. If `message` is given, it's broadcast to all players in red via `tellraw` immediately after. |
 | `POST`   | `/api/servers/<id>/players/<username>/heal`             | —                                                    | Sets health + food to full. Uses live entity merge when running; NBT edit when stopped.                          |
 | `POST`   | `/api/servers/<id>/players/<username>/starve`           | —                                                    | Sets food/saturation to zero. Uses live entity merge when running; NBT edit when stopped.                        |
 | `POST`   | `/api/servers/<id>/players/<username>/feed`             | —                                                    | Sets food/saturation to full. Uses live entity merge when running; NBT edit when stopped.                        |
@@ -773,10 +848,19 @@ These are direct per-player actions under `/players/<username>/...`.
 | `DELETE` | `/api/servers/<id>/players/<username>/effects/<effect>` | —                                                    | Removes one specific effect, e.g. `speed` or `minecraft:speed`. Requires the server to be running.               |
 | `GET`    | `/api/servers/<id>/players/<username>/position`         | —                                                    | Returns `{x,y,z}`. Uses live RCON entity data when possible, falls back to playerdata file.                      |
 | `POST`   | `/api/servers/<id>/players/<username>/teleport`         | `{"x": 100.5, "y": 70, "z": -20}`                    | Teleports immediately via RCON when running; updates saved `Pos` in playerdata when stopped.                     |
-| `POST`   | `/api/servers/<id>/players/<username>/whitelist`        | —                                                    | Convenience wrapper for adding to whitelist. Requires running server for Java; works while stopped for `bedrock`. |
+| `POST`   | `/api/servers/<id>/players/<username>/whitelist`        | —                                                    | Convenience wrapper for adding to whitelist. Requires running server for Java. For `bedrock` see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking). |
 | `POST`   | `/api/servers/<id>/players/<username>/ban`              | `{"reason": "griefing"}`                             | Convenience wrapper for ban command. Requires running server.                                                    |
 | `DELETE` | `/api/servers/<id>/players/<username>/ban`              | —                                                    | Unban. Uses RCON when running, file edit when stopped.                                                           |
-| `POST`   | `/api/servers/<id>/players/<username>/op`               | —                                                    | Convenience wrapper for op command. Requires running server.                                                     |
+| `POST`   | `/api/servers/<id>/players/<username>/op`               | —                                                    | Convenience wrapper for op command. Requires running server. For `bedrock` see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking). |
+
+The optional kill `message` is sent via `tellraw @a`, best-effort (a failure to send it
+doesn't fail the kill itself). The JSON payload differs by edition, since Bedrock has no
+top-level `"color"` key at all:
+
+- Java: `{"text": "<message>", "color": "red"}`
+- Bedrock: `{"rawtext": [{"text": "§c<message>"}]}` — `§c` is the built-in red format code,
+  embedded directly in the text, since Bedrock's `tellraw` doesn't support a separate
+  `color` field the way Java's does.
 
 #### Effect endpoints
 
@@ -929,15 +1013,53 @@ Inventory slot ranges: `0-8` hotbar, `9-35` main inventory, `100-103` armor (fee
 | `DELETE` | `/api/servers/<id>/players/<username>/enderchest/<slot>` | —                                             | Remove the item at the given slot (0-26). NBT edit.                                          |
 | `POST`   | `/api/servers/<id>/players/<username>/enderchest`        | `{"item_id": "minecraft:elytra", "count": 1}` | Add an item to the ender chest. `slot` (0-26) is optional — first free slot used if omitted. |
 
+#### Bedrock whitelist & op tracking
+
+Bedrock has neither RCON nor Java's whitelist/ops file formats, so whitelist and op
+management for `bedrock` servers work differently from Java under the hood, even though
+they use the same endpoints (`/whitelist`, `/ops`, and their `/players/<username>/...`
+equivalents above):
+
+- **Whitelist add/remove** (the actual console commands, confirmed against Microsoft's
+  Bedrock docs — Bedrock renamed "whitelist" to "allowlist" in 1.18.10):
+  - Add: `allowlist add "<name>"` — remove: `allowlist remove "<name>"`.
+  - If the server is running, these are sent as real console commands via the image's
+    `send-command` script. Since that script returns no output, the result is verified by
+    re-reading `allowlist.json` immediately afterward; if the name isn't there (add) or is
+    still there (remove), the request reports failure instead of a false success.
+  - If the server is **stopped**, there's no console to talk to, so `allowlist.json` is
+    edited directly instead — whitelisting still works offline.
+  - The first time a name is added, `allow-list=true` is persisted to `server.properties`
+    (survives container recreation) and, best-effort, `allowlist on` is sent live if the
+    server is running — otherwise the allow-list would silently not be enforced at all.
+- **Op/deop**: `op "<name>"` / `deop "<name>"`, requires the server to be running.
+  Bedrock's `permissions.json` (the ops-equivalent) is keyed by **XUID only — no
+  username field at all**, and the server can only resolve a username to XUID for a
+  player it has already seen. So:
+  - A player must have **connected to the server at least once** before they can be
+    op'd — you'll get a clear error otherwise, rather than a command that silently no-ops.
+  - The XUID is resolved from (in order): a live scan of recent connect log lines,
+    `allowlist.json` (if it already has an xuid filled in), then CSCM's own tracked
+    history. Once resolved, op/deop is verified by re-reading `permissions.json` for a
+    matching `{"xuid": ..., "permission": "operator"}` entry (or its absence, for deop).
+- **Tracking**: every confirmed whitelist/op change for a `bedrock` server is logged to a
+  local `bedrock_player_events` table (server_id, username, xuid, event_type, timestamp).
+  This is what powers:
+  - `ops` in `GET /api/servers/<id>/players` — Bedrock's `permissions.json` has no names to
+    list directly, so this is derived from each username's most recent `op_add`/`op_remove`
+    event instead.
+  - The `history` array in `GET /api/servers/<id>/players/<username>/statistics` (below).
+  - Note this event log only reflects changes made **through this API** — an admin editing
+    `allowlist.json`/`permissions.json` directly, or running console commands manually, won't
+    appear in it (though `whitelist` in `GET /api/servers/<id>/players` and the `whitelisted`
+    field in `/statistics` are always read live from `allowlist.json`, so those two stay
+    accurate regardless).
+
 #### Statistics endpoint
 
 #### `GET /api/servers/<id>/players/<username>/statistics`
 
-Returns aggregated player statistics sourced from `world/stats/<uuid>.json`.
-
-**Not available for `bedrock` servers** (returns `404`) — this file format is Java-only.
-Bedrock stores its whole world, including player data, in LevelDB, a different storage
-engine with an undocumented internal key schema, so there's no equivalent file to read.
+For Java servers, returns aggregated player statistics sourced from `world/stats/<uuid>.json`:
 
 ```json
 {
@@ -959,6 +1081,34 @@ engine with an undocumented internal key schema, so there's no equivalent file t
   }
 }
 ```
+
+**For `bedrock` servers**, gameplay counters (blocks mined, playtime, kills, etc.) aren't
+available — Bedrock stores its whole world, including player data, in LevelDB, a different
+storage engine with an undocumented internal key schema, so there's no file to read them
+from. Instead this returns whitelist/operator status, sourced from live `allowlist.json` /
+`permissions.json` reads plus the tracked event history (see
+[Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking)):
+
+```json
+{
+  "success": true,
+  "username": "Steve",
+  "xuid": "2535409695687979",
+  "statistics": {
+    "whitelisted": true,
+    "operator": false
+  },
+  "history": [
+    { "event": "whitelist_add", "xuid": null, "at": "2026-07-05 10:00:00" },
+    { "event": "op_remove", "xuid": "2535409695687979", "at": "2026-07-04 22:14:00" },
+    { "event": "op_add", "xuid": "2535409695687979", "at": "2026-07-04 21:50:00" }
+  ],
+  "note": "Gameplay statistics ... aren't available for Bedrock ..."
+}
+```
+
+`xuid` and `operator` are `null` if the player has never connected — Bedrock resolves
+operator status by XUID, which isn't known until a player joins at least once.
 
 #### Selective player reset/delete endpoint
 

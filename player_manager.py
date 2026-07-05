@@ -13,10 +13,13 @@ Requires the ``nbtlib`` package (pip install nbtlib).
 
 import json
 import re
+import sqlite3
+import time
 from pathlib import Path
 
 import docker_manager
 import properties_manager
+from db import get_db
 from docker_manager import server_data_dir
 from logger import get_logger
 
@@ -110,14 +113,17 @@ def _whitelist_filename(server_id: int) -> str:
 
 
 def get_players(server_id: int) -> dict:
+    is_bedrock = _is_bedrock(server_id)
     whitelist = _read_json(server_id, _whitelist_filename(server_id))
-    ops = _read_json(server_id, "ops.json")
     banned = _read_json(server_id, "banned-players.json")
+    # permissions.json (Bedrock's ops-equivalent) is keyed by XUID only, no
+    # name field — ops.json can't be read the same way, so use the event log.
+    ops = _bedrock_known_ops(server_id) if is_bedrock else [e.get("name") for e in _read_json(server_id, "ops.json")]
 
     online = []
     if _is_running(server_id):
         try:
-            if _is_bedrock(server_id):
+            if is_bedrock:
                 # No RCON on Bedrock — reconstructed from container log
                 # connect/disconnect lines instead of a `list` command.
                 online = docker_manager.get_bedrock_online_players(server_id)
@@ -132,7 +138,7 @@ def get_players(server_id: int) -> dict:
     return {
         "online": online,
         "whitelist": [e.get("name") for e in whitelist],
-        "ops": [e.get("name") for e in ops],
+        "ops": ops,
         "banned": [e.get("name") for e in banned],
     }
 
@@ -148,16 +154,78 @@ def _write_json(server_id: int, filename: str, data: list) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
-def _bedrock_allowlist_reload(server_id: int) -> None:
-    """Best-effort: ask a running server to pick up the edited allowlist.json
-    immediately. If this fails, the file edit still applies on next restart.
-    """
-    if not _is_running(server_id):
-        return
+# ── Bedrock event log (schema: bedrock_player_events) ──────────────────────────
+# Bedrock has no per-player stats files to read back, so whitelist/op changes
+# made through this API are logged here as an audit trail, and "current
+# status" is derived by taking the latest event per (server, username, kind).
+
+def _log_bedrock_event(server_id: int, username: str, event_type: str, xuid: str | None = None) -> None:
     try:
-        docker_manager.send_rcon(server_id, "allowlist reload")
-    except Exception as exc:
-        log.warning("allowlist reload failed for server_id=%d: %s", server_id, exc)
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO bedrock_player_events (server_id, username, xuid, event_type)"
+                " VALUES (?, ?, ?, ?)",
+                (server_id, username, xuid, event_type),
+            )
+    except sqlite3.Error as exc:
+        log.warning("Could not log bedrock event server_id=%d user=%s event=%s: %s",
+                    server_id, username, event_type, exc)
+
+
+def _bedrock_event_history(server_id: int, username: str, limit: int = 20) -> list[dict]:
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT event_type, xuid, created_at FROM bedrock_player_events"
+            " WHERE server_id = ? AND username = ? COLLATE NOCASE"
+            " ORDER BY id DESC LIMIT ?",
+            (server_id, username, limit),
+        ).fetchall()
+    return [{"event": r["event_type"], "xuid": r["xuid"], "at": r["created_at"]} for r in rows]
+
+
+def _bedrock_known_ops(server_id: int) -> list[str]:
+    """Usernames whose latest op_add/op_remove event (made through this API)
+    was op_add. permissions.json has no name field to read this back
+    directly, so the event log is the only source for a name-keyed op list.
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT username FROM bedrock_player_events e1
+            WHERE server_id = ? AND event_type IN ('op_add', 'op_remove')
+              AND id = (
+                  SELECT MAX(id) FROM bedrock_player_events e2
+                  WHERE e2.server_id = e1.server_id
+                    AND e2.username = e1.username COLLATE NOCASE
+                    AND e2.event_type IN ('op_add', 'op_remove')
+              )
+              AND event_type = 'op_add'
+            """,
+            (server_id,),
+        ).fetchall()
+    return [r["username"] for r in rows]
+
+
+def _resolve_bedrock_xuid(server_id: int, username: str) -> str | None:
+    """Best-effort XUID lookup: live connect-log scan first (most current),
+    then allowlist.json, then our own event log. Bedrock's permissions.json
+    is keyed by XUID only, so this is required before op/deop or an operator
+    status check can work at all.
+    """
+    xuid = docker_manager.get_bedrock_player_xuid(server_id, username)
+    if xuid:
+        return xuid
+    for entry in _read_json(server_id, "allowlist.json"):
+        if entry.get("name", "").lower() == username.lower() and entry.get("xuid"):
+            return str(entry["xuid"])
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT xuid FROM bedrock_player_events"
+            " WHERE server_id = ? AND username = ? COLLATE NOCASE AND xuid IS NOT NULL"
+            " ORDER BY id DESC LIMIT 1",
+            (server_id, username),
+        ).fetchone()
+    return row["xuid"] if row else None
 
 
 def _ensure_bedrock_allowlist_enabled(server_id: int) -> None:
@@ -178,20 +246,29 @@ def _ensure_bedrock_allowlist_enabled(server_id: int) -> None:
 
 def whitelist_add(server_id: int, username: str) -> dict:
     if _is_bedrock(server_id):
-        # Bedrock has no runtime "whitelist add" console command — allowlist.json
-        # is edited directly, which also works while the server is stopped.
-        entries = _read_json(server_id, "allowlist.json")
-        already_present = any(e.get("name", "").lower() == username.lower() for e in entries)
-        if not already_present:
-            entries.append({"name": username, "ignoresPlayerLimit": False})
-            try:
-                _write_json(server_id, "allowlist.json", entries)
-            except OSError as exc:
-                return {"success": False, "message": f"Could not write allowlist.json: {exc}"}
         _ensure_bedrock_allowlist_enabled(server_id)
-        _bedrock_allowlist_reload(server_id)
-        if already_present:
-            return {"success": True, "message": f"{username} is already on the allowlist"}
+        if _is_running(server_id):
+            # Bedrock's real console command — confirmed against Microsoft's
+            # docs (in-game "/allowlist add", console form drops the slash
+            # like op/deop do). send-command has no output, so verify by
+            # reading allowlist.json back afterward.
+            docker_manager.send_rcon(server_id, f'allowlist add "{username}"')
+            time.sleep(0.3)
+            entries = _read_json(server_id, "allowlist.json")
+            if not any(e.get("name", "").lower() == username.lower() for e in entries):
+                return {"success": False, "message": f"Could not confirm {username} was added to the allowlist"}
+        else:
+            # No running console to talk to — edit the file directly. Also
+            # works this way, so whitelisting still functions while stopped.
+            entries = _read_json(server_id, "allowlist.json")
+            if not any(e.get("name", "").lower() == username.lower() for e in entries):
+                entries.append({"name": username, "ignoresPlayerLimit": False})
+                try:
+                    _write_json(server_id, "allowlist.json", entries)
+                except OSError as exc:
+                    return {"success": False, "message": f"Could not write allowlist.json: {exc}"}
+
+        _log_bedrock_event(server_id, username, "whitelist_add")
         return {"success": True, "message": f"{username} added to allowlist"}
 
     ok, msg = _require_running(server_id)
@@ -203,16 +280,24 @@ def whitelist_add(server_id: int, username: str) -> dict:
 
 def whitelist_remove(server_id: int, username: str) -> dict:
     if _is_bedrock(server_id):
-        entries = _read_json(server_id, "allowlist.json")
-        before = len(entries)
-        entries = [e for e in entries if e.get("name", "").lower() != username.lower()]
-        if len(entries) == before:
-            return {"success": True, "message": f"{username} was not on the allowlist"}
-        try:
-            _write_json(server_id, "allowlist.json", entries)
-        except OSError as exc:
-            return {"success": False, "message": f"Could not write allowlist.json: {exc}"}
-        _bedrock_allowlist_reload(server_id)
+        if _is_running(server_id):
+            docker_manager.send_rcon(server_id, f'allowlist remove "{username}"')
+            time.sleep(0.3)
+            entries = _read_json(server_id, "allowlist.json")
+            if any(e.get("name", "").lower() == username.lower() for e in entries):
+                return {"success": False, "message": f"Could not confirm {username} was removed from the allowlist"}
+        else:
+            entries = _read_json(server_id, "allowlist.json")
+            before = len(entries)
+            entries = [e for e in entries if e.get("name", "").lower() != username.lower()]
+            if len(entries) == before:
+                return {"success": True, "message": f"{username} was not on the allowlist"}
+            try:
+                _write_json(server_id, "allowlist.json", entries)
+            except OSError as exc:
+                return {"success": False, "message": f"Could not write allowlist.json: {exc}"}
+
+        _log_bedrock_event(server_id, username, "whitelist_remove")
         return {"success": True, "message": f"{username} removed from allowlist"}
 
     ok, msg = _require_running(server_id)
@@ -223,6 +308,30 @@ def whitelist_remove(server_id: int, username: str) -> dict:
 
 
 def op_add(server_id: int, username: str) -> dict:
+    if _is_bedrock(server_id):
+        # permissions.json is keyed by XUID only (no name field) — BDS can
+        # only resolve "op <name>" for a player it already knows, so we need
+        # their XUID up front both to issue the command sensibly and to
+        # verify it afterward (send-command gives no output to check).
+        xuid = _resolve_bedrock_xuid(server_id, username)
+        if not xuid:
+            return {
+                "success": False,
+                "message": f"'{username}' must have connected to the server at least once "
+                           "before they can be made an operator (Bedrock resolves op by XUID, "
+                           "which is only known once a player has joined)",
+            }
+        ok, msg = _require_running(server_id)
+        if not ok:
+            return {"success": False, "message": msg}
+        docker_manager.send_rcon(server_id, f'op "{username}"')
+        time.sleep(0.3)
+        perms = _read_json(server_id, "permissions.json")
+        if not any(p.get("xuid") == xuid and p.get("permission") == "operator" for p in perms):
+            return {"success": False, "message": f"Could not confirm operator status for {username}"}
+        _log_bedrock_event(server_id, username, "op_add", xuid=xuid)
+        return {"success": True, "message": f"{username} is now an operator"}
+
     ok, msg = _require_running(server_id)
     if not ok:
         return {"success": False, "message": msg}
@@ -231,6 +340,20 @@ def op_add(server_id: int, username: str) -> dict:
 
 
 def op_remove(server_id: int, username: str) -> dict:
+    if _is_bedrock(server_id):
+        xuid = _resolve_bedrock_xuid(server_id, username)
+        ok, msg = _require_running(server_id)
+        if not ok:
+            return {"success": False, "message": msg}
+        docker_manager.send_rcon(server_id, f'deop "{username}"')
+        if xuid:
+            time.sleep(0.3)
+            perms = _read_json(server_id, "permissions.json")
+            if any(p.get("xuid") == xuid and p.get("permission") == "operator" for p in perms):
+                return {"success": False, "message": f"Could not confirm {username} was deopped"}
+        _log_bedrock_event(server_id, username, "op_remove", xuid=xuid)
+        return {"success": True, "message": f"{username} is no longer an operator"}
+
     ok, msg = _require_running(server_id)
     if not ok:
         return {"success": False, "message": msg}
@@ -239,6 +362,11 @@ def op_remove(server_id: int, username: str) -> dict:
 
 
 def ban_add(server_id: int, username: str, reason: str | None = None) -> dict:
+    if _is_bedrock(server_id):
+        # Bedrock's dedicated server has no ban/pardon console command and no
+        # banned-players.json equivalent — silently "succeeding" here would
+        # just lie about having banned anyone.
+        return {"success": False, "message": "Bans are not supported on Bedrock servers"}
     ok, msg = _require_running(server_id)
     if not ok:
         return {"success": False, "message": msg}
@@ -248,6 +376,8 @@ def ban_add(server_id: int, username: str, reason: str | None = None) -> dict:
 
 
 def ban_remove(server_id: int, username: str) -> dict:
+    if _is_bedrock(server_id):
+        return {"success": False, "message": "Bans are not supported on Bedrock servers"}
     if _is_running(server_id):
         try:
             output = docker_manager.send_rcon(server_id, f"pardon {username}")
@@ -508,11 +638,33 @@ def set_player_gamemode(server_id: int, username: str, game_mode) -> dict:
     }
 
 
-def kill_player(server_id: int, username: str) -> dict:
+def _broadcast_red_message(server_id: int, message: str) -> None:
+    """Best-effort broadcast of `message` in red to all players via tellraw.
+
+    Bedrock and Java use different JSON schemas for tellraw: Java has a flat
+    {"text": ..., "color": "red"} format, but Bedrock has no top-level
+    "color" key at all — it needs the {"rawtext": [{"text": ...}]} wrapper
+    with a section-sign (§c) format code embedded directly in the text.
+    """
+    if _is_bedrock(server_id):
+        payload = json.dumps({"rawtext": [{"text": f"§c{message}"}]})
+    else:
+        payload = json.dumps({"text": message, "color": "red"})
+    try:
+        # raw=True: the JSON payload's embedded quotes would otherwise be
+        # mangled by rcon-cli's shlex-based command splitting.
+        docker_manager.send_rcon(server_id, f"tellraw @a {payload}", raw=True)
+    except Exception as exc:
+        log.warning("Could not broadcast message for server_id=%d: %s", server_id, exc)
+
+
+def kill_player(server_id: int, username: str, message: str | None = None) -> dict:
     ok, msg = _require_running(server_id)
     if not ok:
         return {"success": False, "message": msg}
     output = docker_manager.send_rcon(server_id, f"kill {username}")
+    if message:
+        _broadcast_red_message(server_id, message)
     return {"success": True, "message": output}
 
 
@@ -697,12 +849,32 @@ def get_player_statistics(server_id: int, username: str) -> dict:
     if _is_bedrock(server_id):
         # Bedrock has no equivalent of Java's world/stats/<uuid>.json — it
         # stores the whole world (including player data) in LevelDB, a
-        # different storage engine with an undocumented internal schema.
-        # Not supported rather than silently wrong.
+        # different storage engine with an undocumented internal schema, so
+        # gameplay stats (blocks mined, playtime, etc.) aren't available.
+        # Whitelist/operator status is tracked separately (see the events
+        # table), so report that instead of a flat "not supported".
+        whitelisted = any(
+            e.get("name", "").lower() == username.lower()
+            for e in _read_json(server_id, "allowlist.json")
+        )
+        xuid = _resolve_bedrock_xuid(server_id, username)
+        operator = None
+        if xuid:
+            perms = _read_json(server_id, "permissions.json")
+            operator = any(p.get("xuid") == xuid and p.get("permission") == "operator" for p in perms)
         return {
-            "success": False,
-            "message": "Per-player statistics are not available for Bedrock servers "
-                       "(Bedrock stores player data in LevelDB, not per-player stats files)",
+            "success": True,
+            "username": username,
+            "xuid": xuid,
+            "statistics": {
+                "whitelisted": whitelisted,
+                "operator": operator,
+            },
+            "history": _bedrock_event_history(server_id, username),
+            "note": "Gameplay statistics (blocks mined, playtime, kills, etc.) aren't available "
+                    "for Bedrock — it stores player data in LevelDB, not per-player stats files. "
+                    "'operator' is null if this player has never connected (Bedrock resolves "
+                    "operator status by XUID, which is only known once a player has joined).",
         }
 
     uuid = _lookup_uuid(server_id, username)

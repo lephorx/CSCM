@@ -213,7 +213,11 @@ def kill_player(server_id: int, username: str):
     err = _require_server(server_id)
     if err:
         return err
-    result = player_manager.kill_player(server_id, username)
+    body = request.get_json(silent=True) or {}
+    message = body.get("message")
+    if message is not None and not isinstance(message, str):
+        return jsonify({"success": False, "message": "'message' must be a string"}), 400
+    result = player_manager.kill_player(server_id, username, message)
     return jsonify(result), 200 if result["success"] else 409
 
 

@@ -260,12 +260,20 @@ def kill_server(server_id: int) -> tuple[bool, str]:
     return True, "Kill command sent"
 
 
-def send_rcon(server_id: int, command: str) -> str:
+def send_rcon(server_id: int, command: str, *, raw: bool = False) -> str:
     """Run a console command inside the server's container and return its output.
 
     Java containers have RCON enabled and use rcon-cli. Bedrock has no RCON
     support at all, so the itzg image's ``send-command`` script is used
     instead — it writes to the server's stdin and does not return output.
+
+    Args:
+        raw: For Java, pass the command to rcon-cli as a single argument
+             instead of shell-tokenizing it with shlex first. Needed for
+             commands whose arguments contain literal quotes/braces (e.g.
+             ``tellraw``'s JSON payload) — shlex would strip/regroup those
+             quotes and mangle the JSON. Ignored for Bedrock, which already
+             passes the whole command through untouched.
     """
     container = get_container(server_id)
     if not container:
@@ -278,7 +286,8 @@ def send_rcon(server_id: int, command: str) -> str:
             log.warning("send-command exited %d for server_id=%d: %s", exit_code, server_id, text)
         return text or "Command sent (Bedrock console does not return output)"
 
-    exit_code, output = container.exec_run(["rcon-cli", *shlex.split(command)])
+    args = [command] if raw else shlex.split(command)
+    exit_code, output = container.exec_run(["rcon-cli", *args])
     text = output.decode("utf-8", errors="replace").strip()
     if exit_code != 0:
         log.warning("rcon-cli exited %d for server_id=%d: %s", exit_code, server_id, text)
@@ -307,9 +316,38 @@ def stream_logs(server_id: int):
 # against real server logs), e.g.:
 #   [INFO] Player connected: Steve, xuid: 2535409695687979
 #   [INFO] Player disconnected: Steve, xuid: 2535409695687979, pfid: ...
-_BEDROCK_CONNECT_RE = re.compile(r"Player connected: ([^,]+), xuid:")
-_BEDROCK_DISCONNECT_RE = re.compile(r"Player disconnected: ([^,]+), xuid:")
+# The console output is colorized (ANSI SGR codes), so a code sitting right
+# where the name is expected can get captured as the "name" — e.g. a bare
+# reset code rendered as the literal text "[0m". Strip ANSI escapes before
+# matching so that can't happen.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_BEDROCK_CONNECT_RE = re.compile(r"Player connected: ([^,]+), xuid: (\d+)")
+_BEDROCK_DISCONNECT_RE = re.compile(r"Player disconnected: ([^,]+), xuid: (\d+)")
 _BEDROCK_LOG_SCAN_LINES = 5000
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def get_bedrock_player_xuid(server_id: int, username: str) -> str | None:
+    """Best-effort XUID lookup for a Bedrock username, from the most recent
+    matching "Player connected" log line in the same window used by
+    get_bedrock_online_players. Bedrock's permissions.json is keyed by XUID
+    only (no name field), so this is required before a username can be
+    op'd/deop'd or checked for operator status.
+    """
+    container = get_container(server_id)
+    if not container:
+        return None
+    raw = container.logs(tail=_BEDROCK_LOG_SCAN_LINES, timestamps=False)
+    text = _strip_ansi(raw.decode("utf-8", errors="replace"))
+    xuid = None
+    for line in text.splitlines():
+        match = _BEDROCK_CONNECT_RE.search(line)
+        if match and match.group(1).strip().lower() == username.lower():
+            xuid = match.group(2)
+    return xuid
 
 
 def get_bedrock_online_players(server_id: int) -> list[str]:
@@ -322,13 +360,15 @@ def get_bedrock_online_players(server_id: int) -> list[str]:
     if not container:
         return []
     raw = container.logs(tail=_BEDROCK_LOG_SCAN_LINES, timestamps=False)
-    text = raw.decode("utf-8", errors="replace")
+    text = _strip_ansi(raw.decode("utf-8", errors="replace"))
 
     online: dict[str, None] = {}
     for line in text.splitlines():
         match = _BEDROCK_CONNECT_RE.search(line)
         if match:
-            online[match.group(1).strip()] = None
+            name = match.group(1).strip()
+            if name:
+                online[name] = None
             continue
         match = _BEDROCK_DISCONNECT_RE.search(line)
         if match:

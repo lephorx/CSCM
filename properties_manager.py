@@ -98,6 +98,99 @@ def patch_properties(server_id: int, changes: dict) -> dict:
     return {"changed": changed, "rejected": rejected, "restart_required": bool(changed)}
 
 
+# ── Bedrock-specific server.properties ──────────────────────────────────────
+# Bedrock's server.properties key set barely overlaps with Java's (e.g.
+# "allow-cheats", "level-type", "server-authoritative-movement" don't exist
+# on Java; Java's "motd"/"pvp"/"spawn-protection" don't exist on Bedrock), so
+# it gets its own validated key list instead of sharing Java's free-form
+# patch_properties. Source: itzg/docker-minecraft-bedrock-server's
+# property-definitions.json (verified against the actual image, 2026-07).
+
+BEDROCK_PROPERTY_ALLOWED_VALUES: dict[str, list[str]] = {
+    "gamemode": ["survival", "creative", "adventure"],
+    "force-gamemode": ["true", "false"],
+    "difficulty": ["peaceful", "easy", "normal", "hard"],
+    "allow-cheats": ["true", "false"],
+    "online-mode": ["true", "false"],
+    "white-list": ["true", "false"],  # deprecated by Bedrock — prefer allow-list
+    "allow-list": ["true", "false"],
+    "enable-lan-visibility": ["true", "false"],
+    "level-type": ["DEFAULT", "FLAT", "LEGACY"],
+    "default-player-permission-level": ["visitor", "member", "operator"],
+    "texturepack-required": ["true", "false"],
+    "content-log-file-enabled": ["true", "false"],
+    "content-log-level": ["verbose", "info", "warning", "error"],
+    "content-log-console-output-enabled": ["true", "false"],
+    "compression-algorithm": ["zlib", "snappy"],
+    "server-authoritative-movement": ["server-auth", "client-auth", "server-auth-with-rewind"],
+    "correct-player-movement": ["true", "false"],
+    "server-authoritative-block-breaking": ["true", "false"],
+    "chat-restriction": ["None", "Dropped", "Disabled"],
+    "disable-player-interaction": ["true", "false"],
+    "client-side-chunk-generation-enabled": ["true", "false"],
+    "block-network-ids-are-hashes": ["true", "false"],
+    "disable-persona": ["true", "false"],
+    "disable-custom-skins": ["true", "false"],
+    "allow-outbound-script-debugging": ["true", "false"],
+    "allow-inbound-script-debugging": ["true", "false"],
+    "script-debugger-auto-attach": ["disabled", "connect", "listen"],
+    "script-watchdog-enable": ["true", "false"],
+    "script-watchdog-enable-exception-handling": ["true", "false"],
+    "script-watchdog-enable-shutdown": ["true", "false"],
+    "script-watchdog-hang-exception": ["true", "false"],
+    "emit-server-telemetry": ["true", "false"],
+    "msa-gamertags-only": ["true", "false"],
+    "item-transaction-logging-enabled": ["true", "false"],
+}
+
+# Valid Bedrock keys with no fixed allowed-value set (free-form strings/numbers).
+BEDROCK_FREEFORM_KEYS = {
+    "server-name", "max-players", "server-port", "server-portv6", "view-distance",
+    "tick-distance", "player-idle-timeout", "max-threads", "level-name", "level-seed",
+    "compression-threshold", "player-position-acceptance-threshold",
+    "player-movement-score-threshold", "player-movement-action-direction-threshold",
+    "player-movement-distance-threshold", "player-movement-duration-threshold-in-ms",
+    "server-authoritative-block-breaking-pick-range-scalar", "server-build-radius-ratio",
+    "force-inbound-debug-port", "script-debugger-auto-attach-connect-address",
+    "script-watchdog-hang-threshold", "script-watchdog-spike-threshold",
+    "script-watchdog-slow-threshold", "script-watchdog-memory-warning",
+    "script-watchdog-memory-limit", "op-permission-level",
+}
+
+BEDROCK_KNOWN_KEYS = set(BEDROCK_PROPERTY_ALLOWED_VALUES) | BEDROCK_FREEFORM_KEYS
+
+
+def patch_bedrock_properties(server_id: int, changes: dict) -> dict:
+    """Like patch_properties, but only accepts known Bedrock property keys
+    (and, where applicable, their known allowed values) instead of anything —
+    a Java-only key would otherwise be written to the file and silently
+    ignored by the Bedrock server.
+
+    Returns {"changed": [...], "rejected": [...], "restart_required": bool}.
+    """
+    normalized: dict[str, str] = {}
+    rejected: list[str] = []
+    for key, value in changes.items():
+        key = str(key).strip()
+        allowed = BEDROCK_PROPERTY_ALLOWED_VALUES.get(key)
+        if key not in BEDROCK_KNOWN_KEYS:
+            rejected.append(key)
+        elif allowed and str(value).lower() not in {a.lower() for a in allowed}:
+            rejected.append(key)
+        else:
+            normalized[key] = str(value)
+
+    if not normalized:
+        return {
+            "changed": [], "rejected": rejected, "restart_required": False,
+            "error": "No valid Bedrock properties in request",
+        }
+
+    result = patch_properties(server_id, normalized)
+    result["rejected"] = rejected + result.get("rejected", [])
+    return result
+
+
 def wait_for_properties_file(server_id: int, timeout_seconds: float = 30.0, poll_interval: float = 0.5) -> Path | None:
     path = _properties_path(server_id)
     deadline = time.monotonic() + timeout_seconds
