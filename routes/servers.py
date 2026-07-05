@@ -276,6 +276,37 @@ def kill_server(server_id: int):
 
 
 # ---------------------------------------------------------------------------
+# POST /api/servers/<id>/recreate
+#
+# Stops, removes, and recreates the container from the server's current DB
+# config, with no changes to that config. World data is untouched (it lives
+# on the bind-mounted volume, not in the container) — same operation the
+# RAM/port/version PATCH endpoints already trigger as a side effect of
+# applying their own changes, exposed here directly for servers whose
+# container just needs to be rebuilt against current code (e.g. one created
+# before a label/behavior was added) without changing any setting.
+# ---------------------------------------------------------------------------
+@servers_bp.route("/servers/<int:server_id>/recreate", methods=["POST"])
+def recreate_server_container(server_id: int):
+    auth_err = authorize()
+    if auth_err:
+        return auth_err
+
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
+    if not row:
+        return jsonify({"success": False, "message": "Server not found"}), 404
+
+    try:
+        docker_manager.recreate_server(row)
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Recreate failed: {exc}"}), 500
+
+    log.info("Server container recreated: db_id=%d", server_id)
+    return jsonify({"success": True, "message": "Container recreated from current configuration"}), 200
+
+
+# ---------------------------------------------------------------------------
 # POST /api/servers/<id>/command
 # Body: { "command": "say Hello" }
 # ---------------------------------------------------------------------------

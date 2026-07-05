@@ -305,6 +305,22 @@ paths:
       responses:
         { "200": { description: OK }, "404": { description: Not found } }
 
+  /api/servers/{id}/recreate:
+    post:
+      tags: [Lifecycle]
+      summary: Recreate the container from current DB config (no settings change)
+      description: >
+        Stops, removes, and recreates the container using the server's existing
+        configuration — useful for a container that predates a label/behavior
+        change (e.g. missing the cscm.type label) instead of forcing a recreate
+        via an unrelated RAM/version change. World data is untouched since it
+        lives on the bind-mounted volume, not in the container.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+        "500": { description: Recreate failed }
+
   /api/servers/{id}/command:
     post:
       tags: [Console]

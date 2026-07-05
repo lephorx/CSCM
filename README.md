@@ -550,6 +550,7 @@ Deletion steps:
 | `POST` | `/api/servers/<id>/stop`    | Sends RCON `stop`, then `docker stop` as a fallback (60s timeout). |
 | `POST` | `/api/servers/<id>/restart` | `docker restart` (60s timeout).                                    |
 | `POST` | `/api/servers/<id>/kill`    | `docker kill` — immediate, ungraceful.                             |
+| `POST` | `/api/servers/<id>/recreate` | Stops, removes, and recreates the container from the server's current DB config — no settings change, just rebuilds it against current code. World data is untouched (bind-mounted, not stored in the container). Use this on a server whose container predates a label/behavior change (e.g. it doesn't have the `cscm.type` label a newer version of CSCM relies on) instead of faking an unrelated RAM/version change to force a recreate. |
 
 All return `{"success": true/false, "message": "..."}`.
 
