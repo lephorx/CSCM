@@ -394,18 +394,63 @@ export const api = {
       path = "/",
       filename?: string
     ) => {
-      const formData = new FormData()
-      for (const file of files) {
-        formData.append("files", file)
-      }
-      let url = `/api/servers/${id}/files/upload?path=${encodePath(path)}`
-      if (filename) url += `&filename=${encodeURIComponent(filename)}`
       const token = getStoredToken()
-      return fetch(url, {
-        method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-      }).then((r) => r.json())
+
+      // The backend only accepts one file per request, under the field
+      // name "file" (singular) — send one request per file rather than
+      // bundling them all into a single multipart body.
+      const uploadOne = async (file: File) => {
+        const formData = new FormData()
+        formData.append("file", file)
+        let url = `/api/servers/${id}/files/upload?path=${encodePath(path)}`
+        // A rename override only makes sense for a single file — applying
+        // it across a multi-file batch would make every file collide.
+        if (filename && files.length === 1) {
+          url += `&filename=${encodeURIComponent(filename)}`
+        }
+        const res = await fetch(url, {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: formData,
+        })
+        if (res.status === 401 && typeof window !== "undefined") {
+          localStorage.removeItem(JWT_KEY)
+          window.location.reload()
+          throw new Error("Unauthorized")
+        }
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok || body?.success === false) {
+          throw new Error(body?.message ?? body?.error ?? `Upload failed: ${res.status}`)
+        }
+        return body
+      }
+
+      const results = await Promise.allSettled(files.map(uploadOne))
+      const failed = results.flatMap((r, i) =>
+        r.status === "rejected" ? [files[i].name] : []
+      )
+
+      if (failed.length === files.length) {
+        const reason =
+          results.find((r) => r.status === "rejected") as
+            | PromiseRejectedResult
+            | undefined
+        throw new Error(
+          reason?.reason instanceof Error
+            ? reason.reason.message
+            : "Upload failed"
+        )
+      }
+      if (failed.length > 0) {
+        throw new Error(
+          `Uploaded ${files.length - failed.length}/${files.length} — failed: ${failed.join(", ")}`
+        )
+      }
+
+      return {
+        success: true,
+        message: `Uploaded ${files.length} file${files.length !== 1 ? "s" : ""}`,
+      }
     },
     delete: (id: number, path: string) =>
       apiCall(`/servers/${id}/files/delete?path=${encodePath(path)}`, {
