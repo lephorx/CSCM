@@ -386,18 +386,18 @@ download/world generation happen inside the container afterward. Poll
 
 Request body:
 
-| Field            | Type   | Required | Default                           | Notes                                                                        |
-| ---------------- | ------ | -------- | --------------------------------- | ---------------------------------------------------------------------------- |
-| `name`           | string | yes      | —                                 | Display name; slugified for the subdomain and DNS name.                      |
-| `type`           | string | no       | `paper`                           | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`\|`bedrock`.           |
-| `version`        | string | no       | `1.21.4` (`LATEST` for `bedrock`) | Minecraft version string.                                                    |
-| `loader_version` | string | no       | image default                     | Loader/software version. See table below. Ignored for `bedrock`.             |
-| `port`           | int    | no       | `25565` (`19132` for `bedrock`)   | Host port (1024–65535), must be unique across servers.                       |
-| `mem_min`        | int    | no       | `2`                               | Minimum JVM heap, GB. Ignored for `bedrock` (no JVM).                        |
-| `mem_max`        | int    | no       | `4`                               | Maximum JVM heap, GB. For `bedrock`, used as a container memory cap instead. |
-| `subscription`   | string | no       | env default                       | `premium` or `free` (PlayIT).                                                |
-| `agent`          | string | no       | env default                       | PlayIT agent name.                                                           |
-| `properties`     | object | no       | defaults                          | Initial `server.properties` values to apply during setup.                    |
+| Field            | Type   | Required | Default                             | Notes                                                     |
+| ---------------- | ------ | -------- | ------------------------------------ | --------------------------------------------------------- |
+| `name`           | string | yes      | —                                     | Display name; slugified for the subdomain and DNS name.   |
+| `type`           | string | no       | `paper`                               | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`\|`bedrock`. |
+| `version`        | string | no       | `1.21.4` (`LATEST` for `bedrock`)     | Minecraft version string.                                 |
+| `loader_version` | string | no       | image default                        | Loader/software version. See table below. Ignored for `bedrock`. |
+| `port`           | int    | no       | `25565` (`19132` for `bedrock`)      | Host port (1024–65535), must be unique across servers.    |
+| `mem_min`        | int    | no       | `2`                                   | Minimum JVM heap, GB. Ignored for `bedrock` (no JVM).     |
+| `mem_max`        | int    | no       | `4`                                   | Maximum JVM heap, GB. For `bedrock`, used as a container memory cap instead. |
+| `subscription`   | string | no       | env default                          | `premium` or `free` (PlayIT).                             |
+| `agent`          | string | no       | env default                          | PlayIT agent name.                                        |
+| `properties`     | object | no       | defaults                             | Initial `server.properties` values to apply during setup. |
 
 `loader_version` values by server type:
 
@@ -425,7 +425,7 @@ container instead of the Java image, with a few differences from every other typ
   playtime, etc., which don't exist for Bedrock). See the endpoint docs below.
 - Minecraft clients discover a Java server's port automatically via a Cloudflare SRV
   record; Bedrock has no equivalent DNS mechanism, so **no SRV record is created**.
-  Players must enter the connect address _and_ port manually in the Bedrock client. The
+  Players must enter the connect address *and* port manually in the Bedrock client. The
   provisioning result includes a `note` field calling this out, and the assigned port is
   always returned as `external_port`.
 - Whitelisting and op/deop work for Bedrock, but differently — see
@@ -588,8 +588,8 @@ Server-Sent Events stream of live console output (`docker logs --follow`). Becau
 instead of an `Authorization` header — use a short-lived token and HTTPS in production.
 
 ```js
-const es = new EventSource(`/api/servers/1/console/stream?token=${token}`)
-es.addEventListener("log", (e) => console.log(e.data))
+const es = new EventSource(`/api/servers/1/console/stream?token=${token}`);
+es.addEventListener("log", (e) => console.log(e.data));
 ```
 
 #### `GET /api/servers/<id>/stats`
@@ -618,8 +618,7 @@ server type. Player info differs by edition since Bedrock has no RCON:
   lines of container logs for the image's `Player connected: <name>, xuid: ...` /
   `Player disconnected: ...` lines and replaying them in order — a player who joined
   further back than that window, without a disconnect line inside it, won't show up.
-
-````
+```
 
 ---
 
@@ -662,7 +661,7 @@ Examples:
 { "loader_version": "47.3.0" }
 { "version": "1.21.1", "loader_version": "RECOMMENDED" }
 { "loader_version": null }
-````
+```
 
 Response:
 
@@ -690,11 +689,7 @@ Body:
 Response:
 
 ```json
-{
-  "success": true,
-  "message": "Cheats enabled, server restarted",
-  "enabled": true
-}
+{ "success": true, "message": "Cheats enabled, server restarted", "enabled": true }
 ```
 
 ---
@@ -810,14 +805,14 @@ Body: `{"properties": {"allow-cheats": "true", "difficulty": "hard"}}`.
 If every key in the request is invalid, `changed` is empty and the response also includes
 `"error": "No valid Bedrock properties in request"`. Some notable Bedrock-only keys:
 
-| Key                               | Allowed values                             | Notes                                                                                                                                                      |
-| --------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow-cheats`                    | `true` \| `false`                          | Prefer `PATCH /api/servers/<id>/bedrock/cheats` instead — it also restarts the container for you.                                                          |
-| `gamemode`                        | `survival` \| `creative` \| `adventure`    |                                                                                                                                                            |
-| `difficulty`                      | `peaceful` \| `easy` \| `normal` \| `hard` |                                                                                                                                                            |
-| `level-type`                      | `DEFAULT` \| `FLAT` \| `LEGACY`            |                                                                                                                                                            |
-| `default-player-permission-level` | `visitor` \| `member` \| `operator`        |                                                                                                                                                            |
-| `allow-list`                      | `true` \| `false`                          | Prefer the whitelist endpoints instead (see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking)) — they also keep `allowlist.json` in sync. |
+| Key | Allowed values | Notes |
+| --- | --- | --- |
+| `allow-cheats` | `true` \| `false` | Prefer `PATCH /api/servers/<id>/bedrock/cheats` instead — it also restarts the container for you. |
+| `gamemode` | `survival` \| `creative` \| `adventure` | |
+| `difficulty` | `peaceful` \| `easy` \| `normal` \| `hard` | |
+| `level-type` | `DEFAULT` \| `FLAT` \| `LEGACY` | |
+| `default-player-permission-level` | `visitor` \| `member` \| `operator` | |
+| `allow-list` | `true` \| `false` | Prefer the whitelist endpoints instead (see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking)) — they also keep `allowlist.json` in sync. |
 
 As with the generic endpoint, restart the server to apply changes — except for
 `allow-cheats`, which the dedicated `/bedrock/cheats` endpoint already does for you.
@@ -828,35 +823,35 @@ As with the generic endpoint, restart the server to apply changes — except for
 
 #### Player list & roster management
 
-| Method   | Path                          | Body                                     | Notes                                                                                                                                                                                                                                          |
-| -------- | ----------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Method   | Path                          | Body                                     | Notes                                                                           |
+| -------- | ----------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
 | `GET`    | `/api/servers/<id>/players`   | —                                        | `{online, whitelist, ops, banned}`. `online` requires the server to be running. `whitelist` reads live `allowlist.json` for `bedrock` (`whitelist.json` for Java); `ops` for `bedrock` is derived from tracked events, not a file (see below). |
-| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior.                                                                                              |
-| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior.                                                                                              |
-| `POST`   | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior.                                                                                                       |
-| `DELETE` | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior.                                                                                                       |
-| `POST`   | `/api/servers/<id>/kick`      | `{"username": "Steve", "reason": "AFK"}` | Requires running server. Java-only — Bedrock's console kick isn't wired up yet.                                                                                                                                                                |
+| `POST`   | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `DELETE` | `/api/servers/<id>/whitelist` | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server for Java. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `POST`   | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `DELETE` | `/api/servers/<id>/ops`       | `{"username": "Steve"}`                  | Legacy endpoint. Requires running server. See [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking) for `bedrock` behavior. |
+| `POST`   | `/api/servers/<id>/kick`      | `{"username": "Steve", "reason": "AFK"}` | Requires running server. Java-only — Bedrock's console kick isn't wired up yet. |
 
 #### Per-player action endpoints
 
 These are direct per-player actions under `/players/<username>/...`.
 
-| Method   | Path                                                    | Body                                                 | Notes                                                                                                                                                                |
-| -------- | ------------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/api/servers/<id>/players/<username>/gamemode`         | `{"game_mode": "creative"}` or `{"game_mode": 1}`    | Accepts `0-3` or `survival/creative/adventure/spectator`. Uses RCON when running, edits player NBT when stopped.                                                     |
-| `POST`   | `/api/servers/<id>/players/<username>/kill`             | `{"message": "Rest in peace"}` (optional)            | Runs `/kill <username>`. Requires running server. If `message` is given, it's broadcast to all players in red via `tellraw` immediately after.                       |
-| `POST`   | `/api/servers/<id>/players/<username>/heal`             | —                                                    | Sets health + food to full. Uses live entity merge when running; NBT edit when stopped.                                                                              |
-| `POST`   | `/api/servers/<id>/players/<username>/starve`           | —                                                    | Sets food/saturation to zero. Uses live entity merge when running; NBT edit when stopped.                                                                            |
-| `POST`   | `/api/servers/<id>/players/<username>/feed`             | —                                                    | Sets food/saturation to full. Uses live entity merge when running; NBT edit when stopped.                                                                            |
-| `POST`   | `/api/servers/<id>/players/<username>/effects`          | `{"effect": "speed", "seconds": 60, "amplifier": 1}` | Adds a status effect to the player. Requires the server to be running.                                                                                               |
-| `DELETE` | `/api/servers/<id>/players/<username>/effects`          | —                                                    | Removes all active effects from the player. Requires the server to be running.                                                                                       |
-| `DELETE` | `/api/servers/<id>/players/<username>/effects/<effect>` | —                                                    | Removes one specific effect, e.g. `speed` or `minecraft:speed`. Requires the server to be running.                                                                   |
-| `GET`    | `/api/servers/<id>/players/<username>/position`         | —                                                    | Returns `{x,y,z}`. Uses live RCON entity data when possible, falls back to playerdata file.                                                                          |
-| `POST`   | `/api/servers/<id>/players/<username>/teleport`         | `{"x": 100.5, "y": 70, "z": -20}`                    | Teleports immediately via RCON when running; updates saved `Pos` in playerdata when stopped.                                                                         |
+| Method   | Path                                                    | Body                                                 | Notes                                                                                                            |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/servers/<id>/players/<username>/gamemode`         | `{"game_mode": "creative"}` or `{"game_mode": 1}`    | Accepts `0-3` or `survival/creative/adventure/spectator`. Uses RCON when running, edits player NBT when stopped. |
+| `POST`   | `/api/servers/<id>/players/<username>/kill`             | `{"message": "Rest in peace"}` (optional)             | Runs `/kill <username>`. Requires running server. If `message` is given, it's broadcast to all players in red via `tellraw` immediately after. |
+| `POST`   | `/api/servers/<id>/players/<username>/heal`             | —                                                    | Sets health + food to full. Uses live entity merge when running; NBT edit when stopped.                          |
+| `POST`   | `/api/servers/<id>/players/<username>/starve`           | —                                                    | Sets food/saturation to zero. Uses live entity merge when running; NBT edit when stopped.                        |
+| `POST`   | `/api/servers/<id>/players/<username>/feed`             | —                                                    | Sets food/saturation to full. Uses live entity merge when running; NBT edit when stopped.                        |
+| `POST`   | `/api/servers/<id>/players/<username>/effects`          | `{"effect": "speed", "seconds": 60, "amplifier": 1}` | Adds a status effect to the player. Requires the server to be running.                                           |
+| `DELETE` | `/api/servers/<id>/players/<username>/effects`          | —                                                    | Removes all active effects from the player. Requires the server to be running.                                   |
+| `DELETE` | `/api/servers/<id>/players/<username>/effects/<effect>` | —                                                    | Removes one specific effect, e.g. `speed` or `minecraft:speed`. Requires the server to be running.               |
+| `GET`    | `/api/servers/<id>/players/<username>/position`         | —                                                    | Returns `{x,y,z}`. Uses live RCON entity data when possible, falls back to playerdata file.                      |
+| `POST`   | `/api/servers/<id>/players/<username>/teleport`         | `{"x": 100.5, "y": 70, "z": -20}`                    | Teleports immediately via RCON when running; updates saved `Pos` in playerdata when stopped.                     |
 | `POST`   | `/api/servers/<id>/players/<username>/whitelist`        | —                                                    | Convenience wrapper for adding to whitelist. Requires running server for Java. For `bedrock` see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking). |
-| `POST`   | `/api/servers/<id>/players/<username>/ban`              | `{"reason": "griefing"}`                             | Convenience wrapper for ban command. Requires running server.                                                                                                        |
-| `DELETE` | `/api/servers/<id>/players/<username>/ban`              | —                                                    | Unban. Uses RCON when running, file edit when stopped.                                                                                                               |
-| `POST`   | `/api/servers/<id>/players/<username>/op`               | —                                                    | Convenience wrapper for op command. Requires running server. For `bedrock` see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking).                   |
+| `POST`   | `/api/servers/<id>/players/<username>/ban`              | `{"reason": "griefing"}`                             | Convenience wrapper for ban command. Requires running server.                                                    |
+| `DELETE` | `/api/servers/<id>/players/<username>/ban`              | —                                                    | Unban. Uses RCON when running, file edit when stopped.                                                           |
+| `POST`   | `/api/servers/<id>/players/<username>/op`               | —                                                    | Convenience wrapper for op command. Requires running server. For `bedrock` see [Bedrock whitelist & op tracking](#bedrock-whitelist--op-tracking). |
 
 The optional kill `message` is sent via `tellraw @a`, best-effort (a failure to send it
 doesn't fail the kill itself). The JSON payload differs by edition, since Bedrock has no
@@ -1105,16 +1100,8 @@ from. Instead this returns whitelist/operator status, sourced from live `allowli
   },
   "history": [
     { "event": "whitelist_add", "xuid": null, "at": "2026-07-05 10:00:00" },
-    {
-      "event": "op_remove",
-      "xuid": "2535409695687979",
-      "at": "2026-07-04 22:14:00"
-    },
-    {
-      "event": "op_add",
-      "xuid": "2535409695687979",
-      "at": "2026-07-04 21:50:00"
-    }
+    { "event": "op_remove", "xuid": "2535409695687979", "at": "2026-07-04 22:14:00" },
+    { "event": "op_add", "xuid": "2535409695687979", "at": "2026-07-04 21:50:00" }
   ],
   "note": "Gameplay statistics ... aren't available for Bedrock ..."
 }

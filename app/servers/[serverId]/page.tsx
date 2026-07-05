@@ -8,7 +8,14 @@ import {
   notFound,
 } from "next/navigation"
 import Link from "next/link"
-import { ArrowLeft, Loader2, Globe, Pencil, Settings2 } from "lucide-react"
+import {
+  ArrowLeft,
+  Loader2,
+  Globe,
+  Pencil,
+  Settings2,
+  RefreshCw,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { TopNav } from "@/components/TopNav"
@@ -85,6 +92,11 @@ export default function ServerDetailPage() {
   const [cheatsEnabled, setCheatsEnabled] = useState<boolean | null>(null)
   const [cheatsConfirmOpen, setCheatsConfirmOpen] = useState(false)
   const [cheatsSaving, setCheatsSaving] = useState(false)
+
+  // Recreate container (rebuild from current DB config, no settings change)
+  const [recreateConfirmOpen, setRecreateConfirmOpen] = useState(false)
+  const [recreating, setRecreating] = useState(false)
+  const [recreateStep, setRecreateStep] = useState("")
 
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -196,6 +208,29 @@ export default function ServerDetailPage() {
     const res = await api.servers.get(serverId)
     const found: Server | undefined = res?.server ?? res?.data ?? res
     if (found) setServer(normalizeServer(found))
+  }
+
+  async function handleRecreate() {
+    setRecreateConfirmOpen(false)
+    setRecreating(true)
+    try {
+      setRecreateStep("Backing up server…")
+      await api.backups.create(serverId, "zip")
+
+      setRecreateStep("Rebuilding container…")
+      await api.control.recreate(serverId)
+
+      toast.success("Server recreated — container rebuilt from current config")
+      await refreshServerMeta()
+      fetchStats()
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to recreate server"
+      )
+    } finally {
+      setRecreating(false)
+      setRecreateStep("")
+    }
   }
 
   async function handleToggleCheats() {
@@ -644,6 +679,39 @@ export default function ServerDetailPage() {
                   </Button>
                 </div>
               )}
+
+              {/* Recreate — rebuilds the container from current DB config,
+                  no settings change. Useful when backend/image updates
+                  require a fresh container (new labels, env vars, etc.)
+                  that an existing container won't pick up on its own.
+                  World data lives on the bind-mounted volume, not in the
+                  container, so it survives — a backup is still taken first
+                  as a safety net. */}
+              <div className="flex items-center justify-between px-6 py-4">
+                <div>
+                  <p className="text-xs text-muted-foreground">
+                    Recreate Container
+                  </p>
+                  <p className="text-sm font-medium">
+                    {recreating
+                      ? recreateStep || "Working…"
+                      : "Rebuild from current config"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={recreating}
+                  onClick={() => setRecreateConfirmOpen(true)}
+                >
+                  {recreating ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3.5" />
+                  )}
+                  Recreate
+                </Button>
+              </div>
             </div>
           </TabsContent>
         </Tabs>
@@ -718,6 +786,37 @@ export default function ServerDetailPage() {
             <Button onClick={handleToggleCheats}>
               {cheatsEnabled ? "Disable & Restart" : "Enable & Restart"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Recreate container confirm */}
+      <Dialog
+        open={recreateConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) setRecreateConfirmOpen(false)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Recreate Container</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This stops, removes, and rebuilds the container from the
+            server&apos;s current settings — no settings will change, and
+            world data isn&apos;t touched since it lives outside the
+            container. This is mainly useful after a backend update that an
+            existing container needs to pick up. A backup will be created
+            automatically first as a safety net.
+          </p>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setRecreateConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleRecreate}>Back Up &amp; Recreate</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

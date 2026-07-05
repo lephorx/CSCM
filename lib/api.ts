@@ -373,6 +373,8 @@ export const api = {
           ...(loader_version !== undefined ? { loader_version } : {}),
         }),
       }),
+    recreate: (id: number) =>
+      apiCall(`/servers/${id}/recreate`, { method: "POST" }),
     command: (id: number, command: string) =>
       apiCall(`/servers/${id}/command`, {
         method: "POST",
