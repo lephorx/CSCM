@@ -23,8 +23,12 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import type { FileEntry } from "@/lib/types"
+import type { FileEntry, UploadProgressInfo } from "@/lib/types"
 import { api } from "@/lib/api"
+import {
+  FileUploadProgress,
+  type FileUploadItem,
+} from "@/components/FileUploadProgress"
 
 // LocalEntry extends FileEntry with an optional `pending` flag for optimistic UI
 type LocalEntry = FileEntry & { pending?: boolean }
@@ -55,10 +59,19 @@ export function FileExplorer({ serverId }: Props) {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploads, setUploads] = useState<FileUploadItem[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [menu, setMenu] = useState<MenuState | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
+  const dismissUploadsRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Clear any pending auto-dismiss timer on unmount
+  useEffect(() => {
+    return () => {
+      if (dismissUploadsRef.current) clearTimeout(dismissUploadsRef.current)
+    }
+  }, [])
 
   // Close menu on scroll or click outside
   useEffect(() => {
@@ -164,6 +177,7 @@ export function FileExplorer({ serverId }: Props) {
     const fileArr = Array.from(files)
     if (fileArr.length === 0) return
     setUploading(true)
+    if (dismissUploadsRef.current) clearTimeout(dismissUploadsRef.current)
 
     // Optimistically add ghost entries so the user sees them immediately
     const placeholders: LocalEntry[] = fileArr.map((f) => ({
@@ -174,15 +188,45 @@ export function FileExplorer({ serverId }: Props) {
     }))
     setEntries((prev) => [...prev, ...placeholders])
 
+    // Map each File back to its progress-panel row id — File objects are
+    // reference-stable, so this survives the round trip through api.files.upload.
+    const idFor = new Map<File, string>()
+    const items: FileUploadItem[] = fileArr.map((f, i) => {
+      const id = `${Date.now()}-${i}-${f.name}`
+      idFor.set(f, id)
+      return { id, name: f.name, loaded: 0, total: f.size, status: "uploading" }
+    })
+    setUploads(items)
+
     const label =
       fileArr.length === 1 ? `"${fileArr[0].name}"` : `${fileArr.length} files`
 
+    function onProgress(file: File, info: UploadProgressInfo) {
+      const id = idFor.get(file)
+      if (!id) return
+      setUploads((prev) =>
+        prev.map((u) =>
+          u.id === id
+            ? { ...u, loaded: info.loaded, status: info.status, error: info.error }
+            : u
+        )
+      )
+    }
+
     try {
-      const res = await api.files.upload(serverId, fileArr, path)
+      const res = await api.files.upload(
+        serverId,
+        fileArr,
+        path,
+        undefined,
+        onProgress
+      )
       toast.success(res?.message ?? `Uploaded ${label}`)
       loadDir(path) // Replace placeholders with real server data
+      dismissUploadsRef.current = setTimeout(() => setUploads([]), 2500)
     } catch (err) {
-      // Remove ghost entries on failure
+      // Remove ghost entries on failure — the per-file progress panel stays
+      // open (showing which ones failed) until the user dismisses it.
       setEntries((prev) => prev.filter((e) => !e.pending))
       toast.error(
         `Failed to upload ${label}: ${err instanceof Error ? err.message : "Unknown error"}`
@@ -441,6 +485,15 @@ export function FileExplorer({ serverId }: Props) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Floating per-file upload progress */}
+      <FileUploadProgress
+        uploads={uploads}
+        onDismiss={() => {
+          if (dismissUploadsRef.current) clearTimeout(dismissUploadsRef.current)
+          setUploads([])
+        }}
+      />
     </div>
   )
 }

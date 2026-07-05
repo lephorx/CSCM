@@ -62,6 +62,13 @@ export interface FileEntry {
   size: number | null
 }
 
+export interface UploadProgressInfo {
+  loaded: number
+  total: number
+  status: "uploading" | "done" | "error"
+  error?: string
+}
+
 export interface FileListResponse {
   success: boolean
   path: string

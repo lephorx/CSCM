@@ -1,4 +1,4 @@
-import type { CreateServerPayload } from "./types"
+import type { CreateServerPayload, UploadProgressInfo } from "./types"
 
 // All requests go to the local Next.js proxy route (/app/api/[...path]/route.ts)
 // which forwards the caller's JWT (from localStorage) on to the CSCM backend.
@@ -392,38 +392,88 @@ export const api = {
       id: number,
       files: File[],
       path = "/",
-      filename?: string
+      filename?: string,
+      onProgress?: (file: File, info: UploadProgressInfo) => void
     ) => {
       const token = getStoredToken()
 
       // The backend only accepts one file per request, under the field
       // name "file" (singular) — send one request per file rather than
-      // bundling them all into a single multipart body.
-      const uploadOne = async (file: File) => {
-        const formData = new FormData()
-        formData.append("file", file)
-        let url = `/api/servers/${id}/files/upload?path=${encodePath(path)}`
-        // A rename override only makes sense for a single file — applying
-        // it across a multi-file batch would make every file collide.
-        if (filename && files.length === 1) {
-          url += `&filename=${encodeURIComponent(filename)}`
-        }
-        const res = await fetch(url, {
-          method: "POST",
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-          body: formData,
+      // bundling them all into a single multipart body. Uses XHR instead
+      // of fetch so we can report per-file upload progress.
+      const uploadOne = (file: File) =>
+        new Promise<Record<string, unknown>>((resolve, reject) => {
+          const formData = new FormData()
+          formData.append("file", file)
+          let url = `/api/servers/${id}/files/upload?path=${encodePath(path)}`
+          // A rename override only makes sense for a single file — applying
+          // it across a multi-file batch would make every file collide.
+          if (filename && files.length === 1) {
+            url += `&filename=${encodeURIComponent(filename)}`
+          }
+
+          const xhr = new XMLHttpRequest()
+          xhr.open("POST", url)
+          if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              onProgress?.(file, {
+                loaded: e.loaded,
+                total: e.total,
+                status: "uploading",
+              })
+            }
+          }
+
+          xhr.onload = () => {
+            if (xhr.status === 401 && typeof window !== "undefined") {
+              localStorage.removeItem(JWT_KEY)
+              window.location.reload()
+              reject(new Error("Unauthorized"))
+              return
+            }
+            let body: Record<string, unknown> = {}
+            try {
+              body = JSON.parse(xhr.responseText)
+            } catch {
+              // non-JSON body — fall through to the status-based error below
+            }
+            if (xhr.status < 200 || xhr.status >= 300 || body?.success === false) {
+              const message =
+                (body?.message as string | undefined) ??
+                (body?.error as string | undefined) ??
+                `Upload failed: ${xhr.status}`
+              onProgress?.(file, {
+                loaded: file.size,
+                total: file.size,
+                status: "error",
+                error: message,
+              })
+              reject(new Error(message))
+              return
+            }
+            onProgress?.(file, {
+              loaded: file.size,
+              total: file.size,
+              status: "done",
+            })
+            resolve(body)
+          }
+
+          xhr.onerror = () => {
+            const message = "Network error during upload"
+            onProgress?.(file, {
+              loaded: 0,
+              total: file.size,
+              status: "error",
+              error: message,
+            })
+            reject(new Error(message))
+          }
+
+          xhr.send(formData)
         })
-        if (res.status === 401 && typeof window !== "undefined") {
-          localStorage.removeItem(JWT_KEY)
-          window.location.reload()
-          throw new Error("Unauthorized")
-        }
-        const body = await res.json().catch(() => ({}))
-        if (!res.ok || body?.success === false) {
-          throw new Error(body?.message ?? body?.error ?? `Upload failed: ${res.status}`)
-        }
-        return body
-      }
 
       const results = await Promise.allSettled(files.map(uploadOne))
       const failed = results.flatMap((r, i) =>
