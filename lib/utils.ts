@@ -14,6 +14,13 @@ export function playerName(ref: PlayerRef): string {
   return ref.name ?? ref.username ?? ref.uuid ?? "unknown"
 }
 
+// Real Minecraft usernames are 1-16 chars, letters/digits/underscore only.
+// Guards against a corrupted/duplicated RCON "list" response (observed when
+// overlapping RCON calls race — e.g. the stats poll and the players panel
+// both issuing `list` at once) being parsed as if the whole raw sentence
+// were a single player name.
+const VALID_USERNAME_RE = /^[A-Za-z0-9_]{1,16}$/
+
 // Parses the `players_raw` string returned by /stats, e.g.
 // "There are 2 of a max of 20 players online: Steve, Alex"
 export function parsePlayersRaw(raw: string | null | undefined): ParsedPlayers {
@@ -28,7 +35,7 @@ export function parsePlayersRaw(raw: string | null | undefined): ParsedPlayers {
     ? namesMatch[1]
         .split(",")
         .map((n) => n.trim())
-        .filter(Boolean)
+        .filter((n) => VALID_USERNAME_RE.test(n))
     : []
 
   return { online, max, names }
