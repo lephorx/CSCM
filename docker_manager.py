@@ -316,15 +316,17 @@ def stream_logs(server_id: int):
 # against real server logs), e.g.:
 #   [INFO] Player connected: Steve, xuid: 2535409695687979
 #   [INFO] Player disconnected: Steve, xuid: 2535409695687979, pfid: ...
-# The console output is colorized (ANSI SGR codes), so a code sitting right
-# where the name is expected can get captured as the "name" — e.g. a bare
-# reset code rendered as the literal text "[0m". Strip ANSI escapes before
-# matching so that can't happen. Docker's log API has also been observed to
-# drop the leading ESC (0x1b) byte on some lines while leaving the rest of
-# the escape sequence ("[0m") intact as plain text, which _strip_ansi alone
-# wouldn't catch — _looks_like_ansi_noise() is a second, ESC-independent
-# check against exactly that residual shape.
+# The console output is colorized (ANSI SGR codes). Docker's log API has
+# also been observed to drop the leading ESC (0x1b) byte on some lines while
+# leaving the rest of the escape sequence ("[0m") intact as plain text. A
+# fragment landing right next to a real name doesn't just replace it with
+# noise — it *attaches* to it (e.g. "[0mSteve" or "Steve[0m") — so both the
+# well-formed (\x1b[...m) and the bare, ESC-less ("[...m") forms are scrubbed
+# from the *whole line* before matching, not just checked for after the
+# fact. Rejecting a captured name only when it happens to be pure residue
+# (the earlier approach) missed exactly this attached-fragment case.
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_ANSI_BARE_RESIDUE_RE = re.compile(r"\[[0-9;]*[A-Za-z]")
 _ANSI_RESIDUE_RE = re.compile(r"^\[?[0-9;]*[A-Za-z]$")
 _BEDROCK_CONNECT_RE = re.compile(r"Player connected: ([^,]+), xuid: (\d+)")
 _BEDROCK_DISCONNECT_RE = re.compile(r"Player disconnected: ([^,]+), xuid: (\d+)")
@@ -332,12 +334,14 @@ _BEDROCK_LOG_SCAN_LINES = 5000
 
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_ESCAPE_RE.sub("", text)
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    return _ANSI_BARE_RESIDUE_RE.sub("", text)
 
 
 def _looks_like_ansi_noise(name: str) -> bool:
-    """True for residual ANSI escape fragments like "[0m", "0m", "[1;33m" —
-    never a real Bedrock gamertag."""
+    """Defensive backstop for escape variants _strip_ansi doesn't cover
+    (e.g. intermediate-byte CSI sequences): true for residual fragments
+    like "[0m", "0m", "[1;33m" — never a real Bedrock gamertag."""
     return bool(_ANSI_RESIDUE_RE.match(name))
 
 

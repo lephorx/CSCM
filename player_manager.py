@@ -87,6 +87,13 @@ _BLOCK_ID_HINTS = (
 
 _EFFECT_ID_RE = re.compile(r"^[a-z0-9_:.]+$")
 
+# Real Minecraft usernames are 1-16 chars, letters/digits/underscore only.
+# Guards against a corrupted/duplicated RCON "list" response (observed when
+# overlapping RCON calls race — e.g. the stats poll and the players panel
+# both issuing `list` at once) being parsed as if the whole raw sentence
+# were a single player name.
+_VALID_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+
 
 def _read_json(server_id: int, filename: str) -> list:
     path = Path(server_data_dir(server_id)) / filename
@@ -131,7 +138,13 @@ def get_players(server_id: int) -> dict:
                 output = docker_manager.send_rcon(server_id, "list")
                 match = re.search(r"online:\s*(.*)$", output)
                 if match and match.group(1).strip():
-                    online = [name.strip() for name in match.group(1).split(",") if name.strip()]
+                    candidates = [n.strip() for n in match.group(1).split(",") if n.strip()]
+                    online = [n for n in candidates if _VALID_USERNAME_RE.match(n)]
+                    if len(online) != len(candidates):
+                        log.warning(
+                            "Discarded malformed name(s) from RCON `list` for server_id=%d: %s",
+                            server_id, [n for n in candidates if n not in online],
+                        )
         except Exception as exc:
             log.warning("Could not fetch online players for server_id=%d: %s", server_id, exc)
 

@@ -49,7 +49,8 @@ def _upload_destination(
         return target, target / filename
 
     if target.exists() and target.is_file():
-        parent_dir = _server_dir(server_id, str(rel.parent) if str(rel.parent) != "." else "")
+        parent = Path(rel_path).parent
+        parent_dir = _server_dir(server_id, str(parent) if str(parent) != "." else "")
         if parent_dir is None:
             return None, None
         return parent_dir, target
