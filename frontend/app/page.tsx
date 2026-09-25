@@ -10,6 +10,7 @@ import { ServerCard } from "@/components/ServerCard"
 import { ServerCreateModal } from "@/components/ServerCreateModal"
 import { ServerCreationProgress } from "@/components/ServerCreationProgress"
 import { AuthPage, AuthStatusError } from "@/components/AuthPage"
+import { SetupWizard } from "@/components/SetupWizard"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
 import { useServerCreation } from "@/hooks/useServerCreation"
@@ -35,6 +36,25 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
   const [defaultsOpen, setDefaultsOpen] = useState(false)
+  // null until loaded; the wizard runs after account creation until finished
+  const [setup, setSetup] = useState<{
+    completed: boolean
+    public_available: boolean
+  } | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  const loadSetup = useCallback(async () => {
+    try {
+      setSetup(await api.setup.get())
+    } catch {
+      // older API without setup support: behave as before
+      setSetup({ completed: true, public_available: true })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (authenticated) loadSetup()
+  }, [authenticated, loadSetup])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchServers = useCallback(async () => {
@@ -120,6 +140,29 @@ export default function DashboardPage() {
     )
   }
 
+  if (!setup) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (!setup.completed || settingsOpen) {
+    return (
+      <div className="min-h-screen bg-background">
+        <TopNav user={user} onLogout={logout} />
+        <SetupWizard
+          firstRun={!setup.completed}
+          onDone={() => {
+            setSettingsOpen(false)
+            loadSetup()
+          }}
+        />
+      </div>
+    )
+  }
+
   if (defaultsOpen) {
     return (
       <DefaultsEditor
@@ -132,7 +175,11 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <TopNav user={user} onLogout={logout} />
+      <TopNav
+        user={user}
+        onLogout={logout}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
       <main className="mx-auto max-w-screen-xl px-6 py-8">
         {/* Page header */}
@@ -191,6 +238,7 @@ export default function DashboardPage() {
         task={creationTask}
         onStart={startCreation}
         onDismiss={dismissCreation}
+        publicAvailable={setup.public_available}
       />
 
       {/* Floating progress — shown when modal is closed but creation is still running */}

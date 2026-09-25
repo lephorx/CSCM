@@ -31,6 +31,8 @@ from routes.files import files_bp
 from routes.players import players_bp
 from routes.properties import properties_bp
 from routes.servers import servers_bp
+from routes.settings import settings_bp
+from routes.system import system_bp
 
 load_dotenv()
 configure_log()
@@ -68,6 +70,8 @@ app.register_blueprint(console_bp)
 app.register_blueprint(properties_bp)
 app.register_blueprint(players_bp)
 app.register_blueprint(backups_bp)
+app.register_blueprint(system_bp)
+app.register_blueprint(settings_bp)
 
 
 @app.before_request

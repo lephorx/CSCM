@@ -18,13 +18,17 @@ On macOS or Linux, install Docker (with Compose) and Git, then run:
 curl -fsSL https://lephor.com/cscm/install.sh | sh
 ```
 
-The installer asks where to store CSCM and its server data, configures public
-Playit access if wanted, installs the official Playit agent as a Docker service
-when selected, and starts the application. To create an agent, follow the
-Playit link shown during setup and paste its `SECRET_KEY`. On macOS, enable
-Docker Desktop host networking before choosing the managed agent. For Windows,
-run the installer from WSL 2 with Docker Desktop integration and host networking
-enabled. Cloudflare custom DNS is optional.
+The installer asks a single question (install with the defaults, or pick the
+folders and port) and starts the application. For Windows, run it from WSL 2
+with Docker Desktop integration enabled.
+
+Everything else is set up in the dashboard right after you create your account:
+local-only or public servers, your Playit account, a Playit agent that CSCM runs
+for you (paste its `SECRET_KEY`) or one you already run, and optional Cloudflare
+custom DNS. Progress is saved as you go, and the values are written to `.env`.
+Change them later from the settings button in the top bar, or edit `.env` and run
+`docker compose restart api`. On macOS and Windows, enable Docker Desktop host
+networking before letting CSCM run the Playit agent.
 
 See the [installation guide](https://lephor.com/wiki/cscm/installation) for
 platform instructions and the [usage guide](https://lephor.com/wiki/cscm/usage)
@@ -53,6 +57,15 @@ The dashboard proxies its API requests to `http://api:5000` inside the Compose
 network. `GET /health` on the dashboard checks the backend. The SQLite file is
 stored at `${DATA_DIR_HOST:-./data}/cscm.db` on the host. The application
 needs access to the host Docker socket to manage Minecraft containers.
+
+## Updates
+
+The dashboard checks `backend/VERSION` on the `main` branch about once an hour.
+When it's newer than the running version, a banner offers a one-click update:
+a short-lived helper container runs `git pull --ff-only` and
+`docker compose up --build -d` for this installation. `.env` and all data stay
+untouched. To publish an update, bump `backend/VERSION` on `main`. Manual
+update and troubleshooting: https://lephor.com/wiki/cscm/help
 
 ## Move an existing installation
 

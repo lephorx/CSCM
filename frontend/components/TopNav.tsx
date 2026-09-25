@@ -1,17 +1,20 @@
 "use client"
 
 import Link from "next/link"
-import { Server, LogOut } from "lucide-react"
+import { Server, LogOut, Settings } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { UpdateBanner } from "@/components/UpdateBanner"
 
 interface Props {
   user?: { id: number; username: string } | null
   onLogout?: () => void
+  onOpenSettings?: () => void
 }
 
-export function TopNav({ user, onLogout }: Props) {
+export function TopNav({ user, onLogout, onOpenSettings }: Props) {
   return (
+    <>
     <header className="border-b border-border bg-background">
       <div className="mx-auto flex h-14 max-w-screen-xl items-center justify-between px-6">
         <Link
@@ -27,6 +30,17 @@ export function TopNav({ user, onLogout }: Props) {
             <span className="text-xs text-muted-foreground">
               {user.username}
             </span>
+          )}
+          {onOpenSettings && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onOpenSettings}
+              aria-label="Connection settings"
+              title="Connection settings"
+            >
+              <Settings className="size-4" />
+            </Button>
           )}
           {onLogout && (
             <Button
@@ -47,5 +61,8 @@ export function TopNav({ user, onLogout }: Props) {
         </div>
       </div>
     </header>
+    {/* only for signed-in users; the version API needs a login */}
+    {user && <UpdateBanner />}
+    </>
   )
 }

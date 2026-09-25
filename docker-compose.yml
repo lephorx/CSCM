@@ -14,6 +14,8 @@ services:
       - ${SERVERS_DIR_HOST:-/opt/cscm/servers}:/data/servers
       - ${BACKUPS_DIR_HOST:-/opt/cscm/backups}:/data/backups
       - ${DATA_DIR_HOST:-./data}:/app/data
+      # connection settings saved from the dashboard are written back here
+      - ./.env:/app/cscm.env
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:5000/health"]
       interval: 30s

@@ -71,6 +71,8 @@ interface Props {
   task: CreationTask | null
   onStart: (payload: CreateServerPayload) => Promise<number>
   onDismiss: () => void
+  /** false when public access (Playit) isn't set up; servers are then local only */
+  publicAvailable?: boolean
 }
 
 type PortStatus =
@@ -87,6 +89,7 @@ export function ServerCreateModal({
   task,
   onStart,
   onDismiss,
+  publicAvailable = true,
 }: Props) {
   const [serverTypes, setServerTypes] = useState<string[]>([
     ...JAVA_TYPES,
@@ -104,7 +107,7 @@ export function ServerCreateModal({
     mem_min: "2",
     mem_max: "4",
     loader_version: "",
-    local_only: false,
+    local_only: !publicAvailable,
   })
 
   const [errors, setErrors] = useState<Partial<typeof form>>({})
@@ -121,7 +124,7 @@ export function ServerCreateModal({
       mem_min: "2",
       mem_max: "4",
       loader_version: "",
-      local_only: false,
+      local_only: !publicAvailable,
     })
     setErrors({})
     setPortStatus("idle")
@@ -540,7 +543,7 @@ export function ServerCreateModal({
                 type="button"
                 role="checkbox"
                 aria-checked={form.local_only}
-                disabled={submitting}
+                disabled={submitting || !publicAvailable}
                 onClick={() =>
                   setForm((prev) => ({
                     ...prev,
@@ -569,6 +572,7 @@ export function ServerCreateModal({
                 className="cursor-pointer select-none"
                 onClick={() =>
                   !submitting &&
+                  publicAvailable &&
                   setForm((prev) => ({
                     ...prev,
                     local_only: !prev.local_only,
@@ -581,6 +585,12 @@ export function ServerCreateModal({
                   reachable on your local network, via this machine&apos;s
                   own IP address and the port above.
                 </p>
+                {!publicAvailable && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Public access isn&apos;t set up. Turn it on under{" "}
+                    <strong>Settings</strong> in the top bar.
+                  </p>
+                )}
               </div>
             </div>
 

@@ -28,6 +28,7 @@ import { BackupsPanel } from "@/components/BackupsPanel"
 import { AuthPage, AuthStatusError } from "@/components/AuthPage"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Switch } from "@/components/ui/switch"
 import {
   Dialog,
   DialogContent,
@@ -98,6 +99,7 @@ export default function ServerDetailPage() {
   const [recreateConfirmOpen, setRecreateConfirmOpen] = useState(false)
   const [recreating, setRecreating] = useState(false)
   const [recreateStep, setRecreateStep] = useState("")
+  const [recreateBackup, setRecreateBackup] = useState(true)
 
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -215,8 +217,10 @@ export default function ServerDetailPage() {
     setRecreateConfirmOpen(false)
     setRecreating(true)
     try {
-      setRecreateStep("Backing up server…")
-      await api.backups.create(serverId, "zip")
+      if (recreateBackup) {
+        setRecreateStep("Backing up server…")
+        await api.backups.create(serverId, "zip")
+      }
 
       setRecreateStep("Rebuilding container…")
       await api.control.recreate(serverId)
@@ -798,9 +802,20 @@ export default function ServerDetailPage() {
             server&apos;s current settings — no settings will change, and
             world data isn&apos;t touched since it lives outside the
             container. This is mainly useful after a backend update that an
-            existing container needs to pick up. A backup will be created
-            automatically first as a safety net.
+            existing container needs to pick up.
           </p>
+          <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2.5 text-sm">
+            <span>
+              Create a backup first
+              <span className="block text-xs text-muted-foreground">
+                Optional. Your world is kept either way.
+              </span>
+            </span>
+            <Switch
+              checked={recreateBackup}
+              onCheckedChange={setRecreateBackup}
+            />
+          </label>
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
@@ -808,7 +823,9 @@ export default function ServerDetailPage() {
             >
               Cancel
             </Button>
-            <Button onClick={handleRecreate}>Back Up &amp; Recreate</Button>
+            <Button onClick={handleRecreate}>
+              {recreateBackup ? "Back Up & Recreate" : "Recreate"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

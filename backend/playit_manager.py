@@ -26,11 +26,32 @@ load_dotenv()
 
 log = get_logger("playit")
 
-PLAYIT_EMAIL        = os.getenv("PLAYIT_EMAIL")
-PLAYIT_PASSWORD     = os.getenv("PLAYIT_PASSWORD")
-PLAYIT_SUBSCRIPTION = os.getenv("PLAYIT_SUBSCRIPTION", "free").lower()  # premium | free
-PLAYIT_REGION       = os.getenv("PLAYIT_REGION", "Germany")  # Germany, Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, United Kingdom, Sweden, Poland, Spain, Singapore, Japan, Australia, Sao Paulo, Chile, India
-PLAYIT_AGENT        = os.getenv("PLAYIT_AGENT", "").strip()  # Agent name (optional)
+# Read at call time, so settings saved from the dashboard apply without a restart.
+def _setting(key: str, default: str = "") -> str:
+    return (os.getenv(key) or default).strip()
+
+
+def _email() -> str:
+    return _setting("PLAYIT_EMAIL")
+
+
+def _password() -> str:
+    return os.getenv("PLAYIT_PASSWORD") or ""
+
+
+def _subscription() -> str:
+    return _setting("PLAYIT_SUBSCRIPTION", "free").lower()  # premium | free
+
+
+def _region() -> str:
+    # Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, Germany, United Kingdom, ...
+    return _setting("PLAYIT_REGION", "Germany")
+
+
+def _agent() -> str:
+    return _setting("PLAYIT_AGENT")  # agent name (optional)
+
+
 TUNNEL_NAME         = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
 TUNNEL_PORT         = os.getenv("TUNNEL_PORT", "25565")
 
@@ -63,13 +84,13 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
         no SRV-based port discovery so playit embeds the port directly.
         ``None`` on failure.
     """
-    if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
+    if not _email() or not _password():
         log.error("PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables are required")
         return None
 
-    selected_region = region or PLAYIT_REGION
-    selected_subscription = (subscription or PLAYIT_SUBSCRIPTION).lower()
-    selected_agent = agent or PLAYIT_AGENT
+    selected_region = region or _region()
+    selected_subscription = (subscription or _subscription()).lower()
+    selected_agent = agent or _agent()
     selected_protocol = (protocol or "java").lower()
 
     headless = os.getenv("PLAYIT_HEADLESS", "true").strip().lower() != "false"
@@ -398,9 +419,9 @@ async def _login(page) -> bool:
     await asyncio.sleep(1)
 
     log.debug("Entering credentials")
-    await page.fill('input[id="email"]', PLAYIT_EMAIL)
+    await page.fill('input[id="email"]', _email())
     await asyncio.sleep(0.5)
-    await page.fill('input[id="password"]', PLAYIT_PASSWORD)
+    await page.fill('input[id="password"]', _password())
     await asyncio.sleep(0.5)
 
     log.info("Submitting login form")
@@ -429,7 +450,7 @@ async def delete_tunnel(tunnel_name: str) -> bool:
     Returns:
         ``True`` if the tunnel was deleted, ``False`` on failure.
     """
-    if not PLAYIT_EMAIL or not PLAYIT_PASSWORD:
+    if not _email() or not _password():
         log.error("PLAYIT_EMAIL and PLAYIT_PASSWORD environment variables are required")
         return False
 

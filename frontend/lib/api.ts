@@ -62,6 +62,27 @@ async function apiCall(endpoint: string, options: RequestInit = {}) {
 }
 
 export const api = {
+  settings: {
+    get: () => apiCall("/settings"),
+    save: (values: Record<string, string | null>) =>
+      apiCall("/settings", { method: "PUT", body: JSON.stringify({ values }) }),
+    startAgent: () => apiCall("/settings/agent", { method: "POST" }),
+    stopAgent: () => apiCall("/settings/agent", { method: "DELETE" }),
+  },
+  setup: {
+    get: () => apiCall("/setup"),
+    update: (state: {
+      step?: string
+      mode?: "public" | "local"
+      completed?: boolean
+    }) => apiCall("/setup", { method: "PUT", body: JSON.stringify(state) }),
+  },
+  system: {
+    version: (refresh = false) =>
+      apiCall(`/system/version${refresh ? "?refresh=1" : ""}`),
+    update: () => apiCall("/system/update", { method: "POST" }),
+    updateStatus: () => apiCall("/system/update"),
+  },
   servers: {
     list: () => apiCall("/servers"),
     get: (id: number) => apiCall(`/servers/${id}`),

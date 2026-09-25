@@ -5,6 +5,7 @@
 #
 # Removes what scripts/install.sh set up:
 #   - every Minecraft server container CSCM created (label cscm.managed=true)
+#   - the Playit agent container the dashboard started (label cscm.playit=true)
 #   - the CSCM dashboard containers, their Docker network and locally built images
 #   - the installation directory, including .env with your saved credentials
 #     (enter its path, or let the script search this computer for it)
@@ -147,12 +148,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
 fi
 
 MC_CONTAINERS=$(docker ps -aq --filter label=cscm.managed=true)
+AGENT_CONTAINERS=$(docker ps -aq --filter label=cscm.playit=true)
 MC_COUNT=$(printf '%s' "$MC_CONTAINERS" | grep -c . || true)
 
 say ""
 say "This will remove:"
 say "  - $MC_COUNT Minecraft server container(s) created by CSCM"
 say "  - the CSCM dashboard containers, network and built images"
+[ -n "$AGENT_CONTAINERS" ] && say "  - the Playit agent container"
 say "  - $INSTALL_DIR (code and .env with saved credentials)"
 [ -n "$SERVER_DIR$BACKUP_DIR$DB_DIR" ] && say "World data and backups are kept unless you choose to delete them next."
 ask_yes "Continue" n
@@ -175,6 +178,12 @@ if [ -n "$MC_CONTAINERS" ]; then
   say "Removing Minecraft server containers…"
   # shellcheck disable=SC2086
   docker rm -f $MC_CONTAINERS >/dev/null
+fi
+
+if [ -n "$AGENT_CONTAINERS" ]; then
+  say "Removing the Playit agent container…"
+  # shellcheck disable=SC2086
+  docker rm -f $AGENT_CONTAINERS >/dev/null
 fi
 
 say "Stopping CSCM…"
