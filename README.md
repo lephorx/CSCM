@@ -10,6 +10,26 @@ The repository combines the complete histories of `CSCM-Tool` and
 `CSCM-Webpage`. Their previously uncommitted changes are included in this
 working tree.
 
+## Guided installation
+
+On macOS or Linux, install Docker (with Compose) and Git, then run:
+
+```sh
+curl -fsSL https://lephor.com/cscm/install.sh | sh
+```
+
+The installer asks where to store CSCM and its server data, configures public
+Playit access if wanted, installs the official Playit agent as a Docker service
+when selected, and starts the application. To create an agent, follow the
+Playit link shown during setup and paste its `SECRET_KEY`. On macOS, enable
+Docker Desktop host networking before choosing the managed agent. For Windows,
+run the installer from WSL 2 with Docker Desktop integration and host networking
+enabled. Cloudflare custom DNS is optional.
+
+See the [installation guide](https://lephor.com/wiki/cscm/installation) for
+platform instructions and the [usage guide](https://lephor.com/wiki/cscm/usage)
+for creating and managing servers.
+
 ## Start with Docker Compose
 
 1. Copy `.env.example` to `.env` and set `SERVERS_DIR_HOST` and

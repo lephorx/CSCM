@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 /data/
+/docker-compose.override.yml
 /.pnpm-store/
 /frontend/node_modules/
 /frontend/.next/
