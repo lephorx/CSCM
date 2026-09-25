@@ -21,7 +21,7 @@ log = get_logger("cli")
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Provision a Minecraft server (Docker), PlayIT tunnel, and Cloudflare DNS."
+        description="Provision a Minecraft server (Docker), PlayIT tunnel."
     )
     parser.add_argument("--name",    default="Minecraft test server",   help="Server display name")
     parser.add_argument("--type",    default="paper", choices=list(SERVER_TYPES.keys()), help="Server flavour (includes 'bedrock')")
@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument("--port",    type=int, default=25565,           help="Local server port (19132 is bedrock's default)")
     parser.add_argument("--mem-min", type=int, default=2,               help="Minimum JVM heap (GB)")
     parser.add_argument("--mem-max", type=int, default=4,               help="Maximum JVM heap (GB)")
-    parser.add_argument("--local-only", action="store_true",            help="Skip the PlayIT tunnel and Cloudflare DNS — LAN/same-network access only")
+    parser.add_argument("--local-only", action="store_true",            help="Skip the PlayIT tunnel — LAN/same-network access only")
     args = parser.parse_args()
 
     log.info(
@@ -52,7 +52,7 @@ def main() -> None:
         print()
         print(f"  Server ID       : {result['server_id']}")
         if result.get("local_only"):
-            print(f"  Local only      : port {result['port']} (no public tunnel/DNS created)")
+            print(f"  Local only      : port {result['port']} (no public tunnel created)")
         else:
             print(f"  Connect address : {result['connect_address']}")
             print(f"  External port   : {result.get('external_port', 'N/A')}")

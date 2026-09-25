@@ -7,7 +7,7 @@ Usage:
     log.info("Server created")
     log.debug("Response: %s", data)
     log.warning("Tunnel port not found")
-    log.error("Cloudflare request failed: %s", err)
+    log.error("PlayIT tunnel creation failed: %s", err)
 
 Log level is controlled via the LOG_LEVEL environment variable (default: INFO).
 """

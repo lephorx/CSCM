@@ -19,7 +19,6 @@ from server_manager import (
     deprovision_server,
     list_servers,
     provision_server,
-    rename_server_subdomain,
 )
 
 log = get_logger("api")
@@ -79,10 +78,18 @@ def get_server_detail(server_id: int):
         return auth_err
     with get_db() as conn:
         row = conn.execute("SELECT * FROM servers WHERE id = ?", (server_id,)).fetchone()
+        tunnels = conn.execute(
+            "SELECT tunnel_address, local_port, external_port FROM playit_tunnels WHERE server_id = ?",
+            (server_id,),
+        ).fetchall()
     if not row:
         return jsonify({"success": False, "message": "Server not found"}), 404
 
     server = _serialize_server(row)
+    server["tunnels"] = [
+        {"address": t["tunnel_address"], "local_port": t["local_port"], "external_port": t["external_port"]}
+        for t in tunnels
+    ]
     return jsonify({"success": True, "server": server})
 
 
@@ -102,13 +109,13 @@ def get_server_detail(server_id: int):
 #   mem_max   int     optional  Maximum JVM heap in GB (Java) or container memory
 #                               cap in GB (Bedrock). Default: 4
 #   subscription string optional Network subscription level: "premium" or "free".
-#                               Default: premium (from PLAYIT_SUBSCRIPTION env var)
+#                               Default: PLAYIT_SUBSCRIPTION env var (free if unset)
 #   agent     string  optional  Agent name for the tunnel (e.g., "US-East", "EU-Central").
 #                               Default: first available (from PLAYIT_AGENT env var)
-#   local_only bool   optional  If true, skip the PlayIT tunnel and Cloudflare DNS steps
+#   local_only bool   optional  If true, skip the PlayIT tunnel step
 #                               entirely — the container's port is still published on the
 #                               host, so anyone on the same network can connect directly,
-#                               but there's no public tunnel/DNS record. subscription/agent
+#                               but there's no public tunnel. subscription/agent
 #                               are ignored when set. Default: false
 #
 # Bedrock servers have no SRV-based port discovery, no RCON, and are not
@@ -176,7 +183,7 @@ def create_server():
     progress_store.update(server_id, action="provision", percent=5,
                           step="Database record created")
 
-    # Steps 2-6 (async): container, PlayIT, Cloudflare (skipped for local_only)
+    # Remaining steps (async): container, PlayIT (skipped for local_only)
     def _bg_provision():
         result = _provision_resources(server_id, subdomain, port, subscription, agent)
         if result.get("success") and initial_properties:
@@ -394,33 +401,9 @@ def create_tunnel_endpoint(server_id: int):
         return jsonify(result), 201
     if "No server found" in result.get("message", ""):
         return jsonify(result), 404
+    if result.get("conflict"):
+        return jsonify(result), 409
     log.error("Tunnel creation failed: %s", result.get("message"))
-    return jsonify(result), 500
-
-
-# ---------------------------------------------------------------------------
-# PATCH /api/servers/<id>/subdomain
-# Body: { "subdomain": "new-name" }
-# ---------------------------------------------------------------------------
-@servers_bp.route("/servers/<int:server_id>/subdomain", methods=["PATCH"])
-def rename_subdomain(server_id: int):
-    auth_err = authorize()
-    if auth_err:
-        return auth_err
-
-    body = request.get_json(silent=True) or {}
-    new_subdomain = body.get("subdomain", "").strip().lower()
-    if not new_subdomain:
-        return jsonify({"success": False, "message": "'subdomain' is required"}), 400
-
-    log.info("Subdomain rename requested: db_id=%d, new_subdomain=%s", server_id, new_subdomain)
-    result = rename_server_subdomain(server_id, new_subdomain)
-
-    if result["success"]:
-        return jsonify(result), 200
-    if "No server found" in result.get("message", ""):
-        return jsonify(result), 404
-    log.error("Subdomain rename failed: %s", result.get("message"))
     return jsonify(result), 500
 
 
@@ -489,8 +472,7 @@ def update_server_port(server_id: int):
         "success": True,
         "message": f"Port updated to {new_port}",
         "port": new_port,
-        "warning": "The PlayIT tunnel and DNS records still point at the old port. "
-                   "Recreate the tunnel via POST /api/servers/<id>/tunnel if needed.",
+        "warning": "The PlayIT tunnel still points at the old port. Update its local port in the PlayIT dashboard.",
     }), 200
 
 

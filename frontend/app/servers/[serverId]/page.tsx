@@ -71,9 +71,6 @@ export default function ServerDetailPage() {
   )
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [tunneling, setTunneling] = useState(false)
-  const [renameOpen, setRenameOpen] = useState(false)
-  const [renameValue, setRenameValue] = useState("")
-  const [renaming, setRenaming] = useState(false)
 
   // Settings edit state
   type EditField = "name" | "port" | "ram" | "version" | null
@@ -255,7 +252,7 @@ export default function ServerDetailPage() {
     setTunneling(true)
     try {
       await api.control.tunnel(serverId)
-      toast.success("Tunnel set up — DNS records created")
+      toast.success("Playit tunnel ready")
       await refreshServerMeta()
     } catch (err) {
       toast.error(
@@ -263,25 +260,6 @@ export default function ServerDetailPage() {
       )
     } finally {
       setTunneling(false)
-    }
-  }
-
-  async function handleRenameSubdomain(e: React.FormEvent) {
-    e.preventDefault()
-    const subdomain = renameValue.trim()
-    if (!subdomain) return
-    setRenaming(true)
-    try {
-      await api.control.subdomain(serverId, subdomain)
-      toast.success("Subdomain updated — DNS propagates within ~1 minute")
-      setRenameOpen(false)
-      await refreshServerMeta()
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to rename subdomain"
-      )
-    } finally {
-      setRenaming(false)
     }
   }
 
@@ -471,77 +449,38 @@ export default function ServerDetailPage() {
           </div>
         </div>
 
-        {/* DNS / tunnel info */}
+        {/* Playit address */}
         {server.local_only ? (
-          <div className="mb-6 border border-border bg-muted/40 px-4 py-3">
+          <div className="mb-6 flex items-center justify-between gap-4 border border-border bg-muted/40 px-4 py-3">
             <div className="text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">Address: </span>
-              {typeof window !== "undefined" ? window.location.hostname : "—"}
-              <span className="ml-4">
-                <span className="font-medium text-foreground">Port: </span>
-                {server.port}
-              </span>
+              <span className="font-medium text-foreground">Local address: </span>
+              {typeof window !== "undefined" ? window.location.hostname : "—"}:{server.port}
+              <p className="mt-1 text-[11px]">Reachable from your local network. Set up a Playit tunnel for public access.</p>
             </div>
-            <p className="mt-1 text-[11px] text-muted-foreground/80">
-              Local only — no public tunnel or DNS. Reachable at this
-              machine&apos;s own IP (shown above as seen by your browser —
-              adjust it if you&apos;re connecting from a different network
-              path) and port, by anyone who can already reach this host.
-            </p>
-          </div>
-        ) : server.dns_records.length > 0 ? (
-          <div className="mb-6 flex items-center justify-between border border-border bg-muted/40 px-4 py-3">
-            <div className="text-xs text-muted-foreground">
-              {server.type === "bedrock" ? (
-                <>
-                  <div>
-                    <span className="font-medium text-foreground">
-                      Address:{" "}
-                    </span>
-                    {server.dns_records[0].name}
-                  </div>
-                  {server.tunnels.length > 0 && (
-                    <div className="mt-0.5">
-                      <span className="font-medium text-foreground">
-                        Port:{" "}
-                      </span>
-                      {server.tunnels[0].external_port}
-                    </div>
-                  )}
-                  <p className="mt-1 text-[11px] text-muted-foreground/80">
-                    Bedrock needs Address and Port entered separately —
-                    don&apos;t combine them as address:port.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <span className="font-medium text-foreground">
-                    Connect:{" "}
-                  </span>
-                  {server.dns_records[0].name}
-                  {server.tunnels.length > 0 && (
-                    <span className="ml-4">
-                      Tunnel: {server.tunnels[0].address}:
-                      {server.tunnels[0].external_port}
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                const current = server.dns_records[0].name.split(".")[0]
-                setRenameValue(current)
-                setRenameOpen(true)
-              }}
-            >
-              <Pencil className="size-3.5" />
-              Rename
+            <Button size="sm" variant="outline" onClick={handleSetupTunnel} disabled={tunneling}>
+              {tunneling && <Loader2 className="size-3.5 animate-spin" />}
+              Set up Playit tunnel
             </Button>
           </div>
-        ) : null}
+        ) : server.tunnels.length > 0 ? (
+          <div className="mb-6 border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {server.type === "bedrock" ? "Address: " : "Connect: "}
+            </span>
+            {server.tunnels[0].address}
+            {server.type === "bedrock" && (
+              <>
+                <span className="ml-4 font-medium text-foreground">Port: </span>
+                {server.tunnels[0].external_port ?? "See Playit dashboard"}
+                <p className="mt-1 text-[11px]">Enter the address and port separately in Bedrock.</p>
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="mb-6 border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            No Playit tunnel address is available for this server.
+          </div>
+        )}
 
         {/* Tabs */}
         <Tabs
@@ -861,47 +800,6 @@ export default function ServerDetailPage() {
               Delete Server
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Rename subdomain */}
-      <Dialog
-        open={renameOpen}
-        onOpenChange={(open) => {
-          if (!open) setRenameOpen(false)
-        }}
-      >
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Rename Subdomain</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Enter a new subdomain name. DNS records will be updated and players
-            can connect via the new address within ~1 minute.
-          </p>
-          <form onSubmit={handleRenameSubdomain} className="space-y-4 pt-1">
-            <Input
-              placeholder="my-server"
-              value={renameValue}
-              onChange={(e) => setRenameValue(e.target.value)}
-              disabled={renaming}
-              autoFocus
-            />
-            <DialogFooter className="gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setRenameOpen(false)}
-                disabled={renaming}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={renaming || !renameValue.trim()}>
-                {renaming && <Loader2 className="size-3.5 animate-spin" />}
-                {renaming ? "Renaming…" : "Rename"}
-              </Button>
-            </DialogFooter>
-          </form>
         </DialogContent>
       </Dialog>
 

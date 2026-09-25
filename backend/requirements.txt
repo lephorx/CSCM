@@ -1,7 +1,5 @@
-requests
 python-dotenv
 docker
-cloudflare
 playwright
 dnspython
 flask

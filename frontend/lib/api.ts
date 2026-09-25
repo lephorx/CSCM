@@ -341,11 +341,6 @@ export const api = {
     kill: (id: number) => apiCall(`/servers/${id}/kill`, { method: "POST" }),
     tunnel: (id: number) =>
       apiCall(`/servers/${id}/tunnel`, { method: "POST" }),
-    subdomain: (id: number, subdomain: string) =>
-      apiCall(`/servers/${id}/subdomain`, {
-        method: "PATCH",
-        body: JSON.stringify({ subdomain }),
-      }),
     rename: (id: number, name: string) =>
       apiCall(`/servers/${id}/name`, {
         method: "PATCH",

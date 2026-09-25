@@ -109,16 +109,16 @@ export function ServerCard({ server, stats, onRefresh }: Props) {
           </span>
         </div>
 
-        {/* DNS / tunnel */}
+        {/* PlayIT tunnel */}
         {server.local_only ? (
           <p className="truncate text-xs text-muted-foreground">
             Local only —{" "}
             {typeof window !== "undefined" ? window.location.hostname : "—"}
           </p>
         ) : (
-          server.dns_records.length > 0 && (
+          server.tunnels.length > 0 && (
             <div className="text-xs text-muted-foreground">
-              <p className="truncate">{server.dns_records[0].name}</p>
+              <p className="truncate">{server.tunnels[0].address}</p>
               {server.type === "bedrock" && server.tunnels.length > 0 && (
                 <p className="truncate font-medium text-foreground">
                   Port {server.tunnels[0].external_port}

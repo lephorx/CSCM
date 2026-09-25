@@ -4,8 +4,8 @@ Interactive CLI for deprovisioning a server by its database ID.
 
 Delegates to server_manager.deprovision_server(), which stops/removes the
 server's container, deletes its data directory, removes the PlayIT tunnel
-and Cloudflare DNS records, and deletes the database row (cascading to
-linked tunnels, DNS records, and backups).
+and deletes the database row (cascading to
+linked tunnels and backups).
 
 Usage:
     python delete_server.py <db_server_id>
@@ -33,21 +33,14 @@ def _print_summary(db_server_id: int) -> bool:
             "SELECT tunnel_address, local_port, external_port FROM playit_tunnels WHERE server_id = ?",
             (db_server_id,),
         ).fetchall()
-        dns_rows = conn.execute(
-            "SELECT record_type, name, target, port FROM dns_records WHERE server_id = ?",
-            (db_server_id,),
-        ).fetchall()
 
     print()
     print(f"  Server ID   : {row['id']}")
     print(f"  Name        : {row['name']}")
-    print(f"  Subdomain   : {row['slug']}")
+    print(f"  Tunnel name : {row['slug']}")
     print(f"  Port        : {row['serverport']}")
     for t in tunnels:
         print(f"  Tunnel      : {t['tunnel_address']}  local={t['local_port']}  external={t['external_port']}")
-    for d in dns_rows:
-        port_suffix = f":{d['port']}" if d["port"] else ""
-        print(f"  DNS [{d['record_type']:5}] : {d['name']} -> {d['target']}{port_suffix}")
     print()
     return True
 

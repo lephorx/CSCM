@@ -57,13 +57,12 @@ export function parsePlayers(
   return parsePlayersRaw(stats?.players_raw)
 }
 
-// Some endpoints (notably GET /servers/<id>) may omit tunnels/dns_records
+// Some endpoints (notably GET /servers/<id>) may omit tunnels
 // when a server has none, rather than returning an empty array.
 export function normalizeServer(raw: Server): Server {
   return {
     ...raw,
     tunnels: raw.tunnels ?? [],
-    dns_records: raw.dns_records ?? [],
     local_only: raw.local_only ?? false,
   }
 }

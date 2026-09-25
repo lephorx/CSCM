@@ -531,7 +531,7 @@ export function ServerCreateModal({
               ) : null}
             </div>
 
-            {/* Local Only — skips the PlayIT tunnel and Cloudflare DNS setup
+            {/* Local Only — skips the PlayIT tunnel setup
                 entirely; the container's port is still published on the
                 host as usual, just reachable only by whoever can already
                 reach this host (same LAN/machine), not a public address. */}

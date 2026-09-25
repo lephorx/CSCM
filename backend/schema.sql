@@ -1,5 +1,5 @@
 -- CSCM-Tool local SQLite schema.
--- Holds both app data (servers, tunnels, DNS, backups) and auth data
+-- Holds both app data (servers, tunnels, backups) and auth data
 -- (users, app_config — created separately by auth_manager.initialize_auth_storage()).
 
 PRAGMA foreign_keys = ON;
@@ -17,10 +17,10 @@ CREATE TABLE IF NOT EXISTS servers (
     rcon_password TEXT NOT NULL,
     container_id  TEXT,
     status        TEXT NOT NULL DEFAULT 'provisioning',
-    -- If true, provisioning skips the PlayIT tunnel and Cloudflare DNS steps
+    -- If true, provisioning skips the PlayIT tunnel step
     -- entirely — the container's port is still published on the host, so
     -- anyone on the same network can connect directly, but there's no public
-    -- tunnel/DNS record. POST /api/servers/<id>/tunnel can add one later.
+    -- tunnel. POST /api/servers/<id>/tunnel can add one later.
     local_only    INTEGER NOT NULL DEFAULT 0,
     createdat     TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -32,16 +32,6 @@ CREATE TABLE IF NOT EXISTS playit_tunnels (
     tunnel_address TEXT,
     local_port     INTEGER,
     external_port  INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS dns_records (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    server_id            INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
-    record_type          TEXT,
-    name                 TEXT,
-    target               TEXT,
-    port                 INTEGER,
-    cloudflare_record_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS backups (

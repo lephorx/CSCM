@@ -16,6 +16,7 @@ Public functions:
 import asyncio
 import os
 import sys
+import dns.resolver
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -27,7 +28,7 @@ log = get_logger("playit")
 
 PLAYIT_EMAIL        = os.getenv("PLAYIT_EMAIL")
 PLAYIT_PASSWORD     = os.getenv("PLAYIT_PASSWORD")
-PLAYIT_SUBSCRIPTION = os.getenv("PLAYIT_SUBSCRIPTION", "premium").lower()  # premium | free
+PLAYIT_SUBSCRIPTION = os.getenv("PLAYIT_SUBSCRIPTION", "free").lower()  # premium | free
 PLAYIT_REGION       = os.getenv("PLAYIT_REGION", "Germany")  # Germany, Seattle, Los Angeles, Denver, Dallas, Chicago, New York, Miami, United Kingdom, Sweden, Poland, Spain, Singapore, Japan, Australia, Sao Paulo, Chile, India
 PLAYIT_AGENT        = os.getenv("PLAYIT_AGENT", "").strip()  # Agent name (optional)
 TUNNEL_NAME         = os.getenv("TUNNEL_NAME", "minecraft-tunnel")
@@ -49,7 +50,7 @@ async def create_tunnel(tunnel_name: str, tunnel_port: int | str, region: str | 
         region: Server region (e.g., "Germany", "Seattle", "Japan").
                 Defaults to PLAYIT_REGION env var or "Germany".
         subscription: Network subscription level: "premium" or "free".
-                Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
+                Defaults to PLAYIT_SUBSCRIPTION env var or "free".
         agent: Agent name to use for the tunnel (e.g., "US-East", "EU-Central").
                Defaults to PLAYIT_AGENT env var or first available agent.
         protocol: "java" or "bedrock" — selects the matching protocol tile
@@ -529,3 +530,23 @@ async def _main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(_main())
+
+
+def lookup_minecraft_srv_port(playit_address: str) -> int | None:
+    """Resolve the SRV record playit.gg creates for a tunnel address.
+
+    Args:
+        playit_address: The tunnel hostname (e.g. ``abc.deu.mcjoin.link``).
+
+    Returns:
+        The external TCP port, or ``None`` if the lookup fails.
+    """
+    try:
+        answers = dns.resolver.resolve(f"_minecraft._tcp.{playit_address}", "SRV")
+        for rdata in answers:
+            port = int(rdata.port)
+            log.debug("SRV lookup resolved: %s -> port %d", playit_address, port)
+            return port
+    except Exception as exc:
+        log.warning("SRV lookup failed for %s: %s", playit_address, exc)
+    return None

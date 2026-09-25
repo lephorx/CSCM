@@ -53,13 +53,12 @@ running CSCM, and all application state lives in a local SQLite database.
                      │   (cscm-mc-<id>)       │   itzg/minecraft-bedrock-server
                      └──────────────────────┘
                                 │
-              ┌─────────────────┴─────────────────┐
-              ▼                                     ▼
-     PlayIT.gg tunnel                     Cloudflare DNS (CNAME, + SRV for Java)
-     (Playwright automation)              (public connect address)
+              ▼
+     PlayIT.gg tunnel and public address
+     (Playwright automation)
 ```
 
-CSCM itself runs in one container (or directly on a host with Docker installed). It talks
+The API runs in a container beside the web dashboard (or directly on a host). It talks
 to the Docker daemon to create, start, stop, and inspect **one container per Minecraft
 server**. Java edition servers (`paper`/`forge`/`fabric`/`vanilla`/`purpur`) use the
 [`itzg/minecraft-server`](https://github.com/itzg/docker-minecraft-server) image, which
@@ -71,7 +70,7 @@ image — no JVM, no RCON. Console commands there go through the image's `send-c
 script instead, which does not return output, and player/backup features that depend on
 RCON output parsing are Java-only for now.
 
-All application data — servers, tunnels, DNS records, backups, backup schedules, users —
+All application data — servers, tunnels, backups, backup schedules, users —
 lives in a single local SQLite file. There is no external database to provision or manage.
 
 ## Features
@@ -88,8 +87,7 @@ lives in a single local SQLite file. There is no external database to provision 
   is running, readable from disk when it's stopped.
 - **Backups**: on-demand and cron-scheduled zip backups with retention pruning, plus
   one-call restore.
-- **Networking**: PlayIT.gg tunnel automation and Cloudflare DNS (CNAME + SRV) so players
-  connect via a friendly subdomain instead of an IP:port.
+- **Networking**: PlayIT.gg tunnel automation so players connect through the address assigned by PlayIT.
 - **File management**: browse, upload, download, and delete files inside a server's data
   directory directly through the API.
 - **Local auth**: single-admin JWT + TOTP (2FA) authentication, no external identity
@@ -99,9 +97,8 @@ lives in a single local SQLite file. There is no external database to provision 
 
 - **Docker Engine** on the host (CSCM talks to it via the Docker socket).
 - **Python 3.12+** (only if running outside Docker).
-- A **PlayIT.gg** account (for tunnels) and a **Cloudflare** zone (for DNS) — both optional
-  if you only need local/LAN access and handle networking yourself, but the tunnel/DNS
-  endpoints require them.
+- A **PlayIT.gg** account (for public tunnels) — optional
+  if you only need local/LAN access. Public tunnel creation requires these credentials.
 - No external database — SQLite ships with Python.
 
 ## Quick Start
@@ -110,7 +107,7 @@ lives in a single local SQLite file. There is no external database to provision 
 git clone <this-repo>
 cd CSCM-Tool
 cp .env.example .env
-# Edit .env: set PLAYIT_*, CLOUDFLARE_*, SERVERS_DIR_HOST, BACKUPS_DIR_HOST, DATA_DIR_HOST
+# Edit .env: set PLAYIT_*, SERVERS_DIR_HOST, BACKUPS_DIR_HOST, DATA_DIR_HOST
 
 docker compose up --build
 ```
@@ -162,10 +159,9 @@ All configuration is via environment variables (see `.env.example`).
 | `BACKUPS_DIR` / `BACKUPS_DIR_HOST`                                     | `/data/backups` / `/opt/cscm/backups` | Same host/container-path split, for backup archives.                                                                                                                                          |
 | `PLAYIT_EMAIL`, `PLAYIT_PASSWORD`                                      | —                                     | PlayIT.gg account credentials (Playwright login).                                                                                                                                             |
 | `PLAYIT_HEADLESS`                                                      | `false`                               | Run the Playwright browser headless.                                                                                                                                                          |
-| `PLAYIT_SUBSCRIPTION`                                                  | `premium`                             | `premium` or `free`.                                                                                                                                                                          |
+| `PLAYIT_SUBSCRIPTION`                                                  | `free`                             | `premium` or `free`.                                                                                                                                                                          |
 | `PLAYIT_REGION`                                                        | `Germany`                             | Tunnel region (premium only).                                                                                                                                                                 |
 | `PLAYIT_AGENT`                                                         | —                                     | Specific PlayIT agent name; first available if unset.                                                                                                                                         |
-| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_BASE_DOMAIN` | —                                     | Cloudflare DNS credentials/zone.                                                                                                                                                              |
 | `FLASK_HOST` / `FLASK_PORT`                                            | `0.0.0.0` / `5000`                    | Bind address for the API.                                                                                                                                                                     |
 | `FLASK_DEBUG`                                                          | `false`                               | Flask debug mode (dev only).                                                                                                                                                                  |
 | `JWT_LIFETIME_HOURS`                                                   | `8`                                   | Login session length.                                                                                                                                                                         |
@@ -191,7 +187,7 @@ authentication data. Initialize it with:
 python scripts/init_db.py
 ```
 
-This creates `servers`, `playit_tunnels`, `dns_records`, `backups`, `backup_schedules`,
+This creates `servers`, `playit_tunnels`, `backups`, `backup_schedules`,
 `bedrock_player_events` (app data) and `users`, `app_config` (auth data, created by
 `auth_manager`). `app.py` also calls this automatically on startup, so a manual run is only
 needed for local development outside Docker.
@@ -233,7 +229,7 @@ instead of `"message"` — check for either key defensively. Common status codes
 | `403`  | Initial setup not completed yet.                                          |
 | `404`  | Server, backup, or file not found.                                        |
 | `409`  | Conflict — e.g. port already in use, or action requires a running server. |
-| `500`  | Unexpected server-side error (Docker/PlayIT/Cloudflare failure, etc.).    |
+| `500`  | Unexpected server-side error (Docker/PlayIT failure, etc.).    |
 
 ---
 
@@ -331,7 +327,7 @@ SRV-based port discovery. See the caveats under `POST /api/servers` below.
 
 #### `GET /api/servers`
 
-Lists every server with its tunnels, DNS records, and live `runtime_status`.
+Lists every server with its tunnels and live `runtime_status`.
 
 ```json
 {
@@ -356,14 +352,6 @@ Lists every server with its tunnels, DNS records, and live `runtime_status`.
           "local_port": 25565,
           "external_port": 34567
         }
-      ],
-      "dns_records": [
-        {
-          "type": "CNAME",
-          "name": "survival-smp.example.com",
-          "target": "abc123.mcjoin.link",
-          "port": null
-        }
       ]
     }
   ]
@@ -376,7 +364,7 @@ Lists every server with its tunnels, DNS records, and live `runtime_status`.
 #### `GET /api/servers/<id>`
 
 Full detail for one server, including `runtime_status`, `port`, `mem_min`, `mem_max`,
-and `loader_version` (excludes the RCON password).
+`loader_version`, and `tunnels` (excludes the RCON password).
 
 Example response:
 
@@ -403,8 +391,7 @@ Example response:
 
 #### `POST /api/servers`
 
-Provisions a full stack: SQLite record → Docker container → PlayIT tunnel → Cloudflare
-CNAME + SRV. This is synchronous but fast — `docker run` returns in seconds; jar
+Provisions a full stack: SQLite record → Docker container → PlayIT tunnel. This is synchronous but fast — `docker run` returns in seconds; jar
 download/world generation happen inside the container afterward. Poll
 `GET /api/servers/<id>` and watch `runtime_status` go `starting` → `healthy`.
 
@@ -412,7 +399,7 @@ Request body:
 
 | Field            | Type   | Required | Default                             | Notes                                                     |
 | ---------------- | ------ | -------- | ------------------------------------ | --------------------------------------------------------- |
-| `name`           | string | yes      | —                                     | Display name; slugified for the subdomain and DNS name.   |
+| `name`           | string | yes      | —                                     | Display name; slugified for the PlayIT tunnel name.   |
 | `type`           | string | no       | `paper`                               | One of `paper`\|`forge`\|`fabric`\|`vanilla`\|`purpur`\|`bedrock`. |
 | `version`        | string | no       | `1.21.4` (`LATEST` for `bedrock`)     | Minecraft version string.                                 |
 | `loader_version` | string | no       | image default                        | Loader/software version. See table below. Ignored for `bedrock`. |
@@ -421,7 +408,7 @@ Request body:
 | `mem_max`        | int    | no       | `4`                                   | Maximum JVM heap, GB. For `bedrock`, used as a container memory cap instead. |
 | `subscription`   | string | no       | env default                          | `premium` or `free` (PlayIT). Ignored if `local_only` is true. |
 | `agent`          | string | no       | env default                          | PlayIT agent name. Ignored if `local_only` is true.        |
-| `local_only`     | bool   | no       | `false`                              | If true, skip the PlayIT tunnel and Cloudflare DNS steps entirely. See below. |
+| `local_only`     | bool   | no       | `false`                              | If true, skip the PlayIT tunnel step entirely. See below. |
 | `properties`     | object | no       | defaults                             | Initial `server.properties` values to apply during setup. |
 
 `loader_version` values by server type:
@@ -435,9 +422,9 @@ Request body:
 
 **`local_only: true`** — for a server that's only meant to be reachable on your own network
 (same LAN, or anyone who can already reach this host), not the public internet. Skips the
-PlayIT tunnel and Cloudflare DNS steps entirely — provisioning goes straight from "create
-the Docker container" to done, no browser automation, no dependency on `PLAYIT_*`/
-`CLOUDFLARE_*` being configured. The container's port is still published on the host exactly
+PlayIT tunnel step entirely — provisioning goes straight from "create
+the Docker container" to done, with no browser automation or dependency on
+`PLAYIT_*` credentials. The container's port is still published on the host exactly
 as normal (`docker port <container>`/`-p host:container`), so anything that can already
 reach this machine — e.g. another device on the same LAN — connects directly via
 `<this-host's-LAN-IP>:<port>`. CSCM doesn't attempt to detect or return that IP itself (it
@@ -466,9 +453,8 @@ container instead of the Java image, with a few differences from every other typ
 - `GET /api/servers/<id>/players/<username>/statistics` reports something different for
   Bedrock — whitelist/operator status instead of Java's gameplay counters (blocks mined,
   playtime, etc., which don't exist for Bedrock). See the endpoint docs below.
-- Minecraft clients discover a Java server's port automatically via a Cloudflare SRV
-  record; Bedrock has no equivalent DNS mechanism, so **no SRV record is created**.
-  Players must enter the connect address *and* port manually in the Bedrock client. The
+- Minecraft clients discover a Java server's port automatically via PlayIT's SRV record.
+  Bedrock has no equivalent port discovery. Players must enter the connect address *and* port manually in the Bedrock client. The
   provisioning result includes a `note` field calling this out, and the assigned port is
   always returned as `external_port`.
 - Whitelisting and op/deop work for Bedrock, but differently — see
@@ -494,9 +480,9 @@ Response `202` (provisioning starts in background):
 ```
 
 After receiving the `202`, poll `GET /api/servers/<id>/progress` until `percent` reaches
-`100` and `status` is `"completed"`. The full server data (tunnel address, DNS records, etc.)
+`100` and `status` is `"completed"`. The full server data (tunnel address, etc.)
 is then available via `GET /api/servers/<id>` — except for a `local_only` server, which has
-no tunnel/DNS data since none was created (see `local_only` above).
+no tunnel data since none was created (see `local_only` above).
 
 You can apply `server.properties` during setup by including a `properties` object:
 
@@ -519,7 +505,7 @@ If default server properties are configured, they are merged first and request-l
 #### `DELETE /api/servers/<id>`
 
 Stops and removes the container, deletes the data directory and all backups, tears down
-the PlayIT tunnel and Cloudflare records, and deletes the database row.
+the PlayIT tunnel, and deletes the database row.
 
 Returns `202` immediately and runs the teardown in the background. Poll
 `GET /api/servers/<id>/progress` until `status` is `"completed"`. The server record
@@ -569,8 +555,6 @@ Provisioning steps and approximate percentages:
 | 5   | Database record created                     |
 | 15  | Creating Docker container                   |
 | 35  | Creating PlayIT tunnel                      |
-| 65  | PlayIT tunnel active — creating DNS records |
-| 82  | Creating Cloudflare SRV record              |
 | 100 | Server provisioned successfully             |
 
 Deletion steps:
@@ -580,7 +564,6 @@ Deletion steps:
 | 10  | Stopping container        |
 | 30  | Removing server data      |
 | 50  | Deleting PlayIT tunnel(s) |
-| 75  | Removing DNS records      |
 | 92  | Cleaning up database      |
 | 100 | Server deleted            |
 
@@ -671,7 +654,7 @@ server type. Player info differs by edition since Bedrock has no RCON:
 
 #### `PATCH /api/servers/<id>/name`
 
-Body: `{"name": "New Name"}`. Database-only rename (does not affect the container or DNS).
+Body: `{"name": "New Name"}`. Database-only rename (does not affect the container or PlayIT address).
 
 #### `PATCH /api/servers/<id>/port`
 
@@ -1268,15 +1251,9 @@ POST /api/servers/3/files/upload?path=mods/plugins/custom&filename=my-plugin.jar
 #### `POST /api/servers/<id>/tunnel`
 
 Body (all optional): `{"region": "Germany", "subscription": "premium", "agent": "EU-Central"}`.
-Creates a PlayIT tunnel and Cloudflare CNAME + SRV records for an existing server (e.g.
-after a port change). For `bedrock` servers, only the CNAME is created (no SRV — see the
-Bedrock caveats under `POST /api/servers`), and the tunnel's assigned port must be shared
-with players directly.
-
-#### `PATCH /api/servers/<id>/subdomain`
-
-Body: `{"subdomain": "new-name"}`. Deletes old Cloudflare DNS records and creates new ones
-under the given subdomain, pointing at the existing tunnel.
+Creates a PlayIT tunnel for an existing local-only server and returns its public address.
+Java clients use the PlayIT hostname directly; Bedrock players enter its assigned port
+separately. Returns HTTP 409 if the server already has a tunnel.
 
 ---
 
@@ -1337,3 +1314,6 @@ Minecraft 26.1+ needs Java 25+, but `MC_IMAGE` is still pinned to a `java21` tag
 new enough JRE (see [itzg's tag list](https://hub.docker.com/r/itzg/minecraft-server/tags)),
 then `POST /api/servers/<id>/recreate` to rebuild the container against it — world data is
 untouched.
+
+Existing installations may still have historical Cloudflare records. CSCM no longer reads
+or changes them; remove any unwanted records from your DNS provider directly.

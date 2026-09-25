@@ -14,7 +14,7 @@ working tree.
 
 1. Copy `.env.example` to `.env` and set `SERVERS_DIR_HOST` and
    `BACKUPS_DIR_HOST` to absolute paths on the Docker host. Configure the
-   PlayIT and Cloudflare values if you want public addresses. Local-only
+   PlayIT values if you want public addresses. Local-only
    servers do not need those credentials.
 2. Start the application:
 

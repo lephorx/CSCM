@@ -9,17 +9,13 @@ Provisioning sequence:
     1. Insert the server record into the local SQLite database.
     2. Create and start the Minecraft server container via docker_manager.
     3. Create a PlayIT tunnel for the server's local port.
-    4. Resolve the tunnel's external port via DNS SRV lookup.
-    5. Create a Cloudflare CNAME record pointing the subdomain to the tunnel.
-    6. Create a Cloudflare SRV record so Minecraft clients discover the port.
+    4. Resolve the PlayIT tunnel's external port for display.
 
 Deprovisioning sequence:
     1. Retrieve the server record and linked resources from the database.
     2. Stop and remove the server's container; delete its data directory.
-    3. Delete all Cloudflare DNS records by their stored record IDs and any
-       PlayIT tunnels.
-    4. Delete the database row, which cascades to playit_tunnels, dns_records,
-       backups, and backup_schedules.
+    3. Delete the PlayIT tunnels.
+    4. Delete the database row and its linked records.
 """
 
 import asyncio
@@ -34,13 +30,7 @@ import docker_manager
 import progress_store
 from docker_manager import BEDROCK_TYPES, SERVER_TYPES, server_data_dir
 from db import get_db
-from playit_manager import create_tunnel, delete_tunnel
-from cloudflare_manager import (
-    create_dns_record,
-    create_srv_record,
-    lookup_minecraft_srv_port,
-    delete_dns_record_by_id,
-)
+from playit_manager import create_tunnel, delete_tunnel, lookup_minecraft_srv_port
 from logger import get_logger
 
 load_dotenv()
@@ -113,7 +103,7 @@ def _provision_resources(
     subscription: str | None = None,
     agent: str | None = None,
 ) -> dict:
-    """Steps 2-6: Docker container, PlayIT tunnel, Cloudflare CNAME + SRV.
+    """Create the Docker container and optional PlayIT tunnel.
 
     Updates progress_store throughout so GET /api/servers/<id>/progress
     can return live percentages to polling clients.
@@ -142,12 +132,12 @@ def _provision_resources(
         return {"success": False, "message": f"Container creation failed: {exc}", "server_id": db_server_id}
 
     if local_only:
-        log.info("Server db_id=%d is local-only — skipping PlayIT tunnel and Cloudflare DNS", db_server_id)
+        log.info("Server db_id=%d is local-only — skipping PlayIT tunnel", db_server_id)
         progress_store.update(db_server_id, action="provision", percent=100,
                               step="Server provisioned successfully (local network only)", status="completed")
         return {
             "success": True,
-            "message": "Server provisioned successfully (local network only — no public tunnel or DNS created)",
+            "message": "Server provisioned successfully (local network only — no public tunnel created)",
             "server_id": db_server_id,
             "local_only": True,
             "port": server_port,
@@ -195,61 +185,14 @@ def _provision_resources(
     except sqlite3.Error as exc:
         log.warning("Failed to persist tunnel record: %s", exc)
 
-    progress_store.update(db_server_id, action="provision", percent=65,
-                          step="PlayIT tunnel active — creating DNS records")
-
-    # ── Step 4: Cloudflare CNAME ─────────────────────────────────────────────
-    log.info("Creating Cloudflare CNAME: %s -> %s", subdomain, tunnel_address)
-    cname_result = create_dns_record(subdomain=subdomain, target=tunnel_address)
-    if not cname_result:
-        log.error("Cloudflare CNAME creation failed for subdomain=%s", subdomain)
-        progress_store.update(db_server_id, action="provision", percent=65,
-                              step="Cloudflare CNAME creation failed", status="failed",
-                              message="Could not create CNAME record")
-        return {"success": False, "message": "Cloudflare CNAME creation failed", "tunnel_address": tunnel_address}
-
-    dns_name, cname_cf_id = cname_result
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO dns_records"
-                " (server_id, record_type, name, target, cloudflare_record_id)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (db_server_id, "CNAME", dns_name, tunnel_address, cname_cf_id),
-            )
-        log.debug("CNAME record persisted: name=%s, cf_id=%s", dns_name, cname_cf_id)
-    except sqlite3.Error as exc:
-        log.warning("Failed to persist CNAME record: %s", exc)
-
-    # ── Step 5: Cloudflare SRV (Java only — Bedrock has no SRV discovery) ────
-    if not is_bedrock:
-        progress_store.update(db_server_id, action="provision", percent=82,
-                              step="Creating Cloudflare SRV record")
-        if external_port:
-            log.info("Creating Cloudflare SRV record: port=%d", external_port)
-            srv_cf_id = create_srv_record(subdomain=subdomain, target=tunnel_address, port=external_port)
-            if srv_cf_id:
-                srv_name = f"_minecraft._tcp.{dns_name}"
-                try:
-                    with get_db() as conn:
-                        conn.execute(
-                            "INSERT INTO dns_records"
-                            " (server_id, record_type, name, target, port, cloudflare_record_id)"
-                            " VALUES (?, ?, ?, ?, ?, ?)",
-                            (db_server_id, "SRV", srv_name, tunnel_address, external_port, srv_cf_id),
-                        )
-                    log.debug("SRV record persisted: name=%s, cf_id=%s", srv_name, srv_cf_id)
-                except sqlite3.Error as exc:
-                    log.warning("Failed to persist SRV record: %s", exc)
-
-    log.info("Server provisioned successfully: db_id=%d, connect_address=%s", db_server_id, dns_name)
+    log.info("Server provisioned successfully: db_id=%d, connect_address=%s", db_server_id, tunnel_address)
     progress_store.update(db_server_id, action="provision", percent=100,
                           step="Server provisioned successfully", status="completed")
     return {
         "success": True,
         "message": "Server provisioned successfully",
         "server_id": db_server_id,
-        "connect_address": dns_name,
+        "connect_address": tunnel_address,
         "tunnel_address": tunnel_address,
         "external_port": external_port,
         **({"note": "Bedrock has no SRV auto-discovery — players must enter the port manually"} if is_bedrock else {}),
@@ -283,9 +226,8 @@ def provision_server(
 def deprovision_server(db_server_id: int) -> dict:
     """Remove a server and all associated resources.
 
-    Stops/removes the server's container, deletes its data directory, all
-    Cloudflare DNS records and PlayIT tunnels, and the database row (which
-    cascades to playit_tunnels, dns_records, backups, backup_schedules).
+    Stops/removes the server's container, deletes its data directory and
+    PlayIT tunnels, then deletes the database row and linked records.
 
     Args:
         db_server_id: The primary key of the server in the ``servers`` table.
@@ -302,10 +244,6 @@ def deprovision_server(db_server_id: int) -> dict:
                 return {"success": False, "message": f"No server found with ID {db_server_id}"}
             server_name = row["name"]
 
-            dns_rows = conn.execute(
-                "SELECT cloudflare_record_id, name FROM dns_records WHERE server_id = ?",
-                (db_server_id,),
-            ).fetchall()
             tunnel_rows = conn.execute(
                 "SELECT tunnel_name FROM playit_tunnels WHERE server_id = ?",
                 (db_server_id,),
@@ -339,19 +277,13 @@ def deprovision_server(db_server_id: int) -> dict:
         if not success:
             log.warning("Could not delete PlayIT tunnel '%s' — may need manual removal", tunnel_name)
 
-    # Delete Cloudflare DNS records
-    progress_store.update(db_server_id, action="delete", percent=75, step="Removing DNS records")
-    for row in dns_rows:
-        log.info("Deleting Cloudflare record: name=%s, cf_id=%s", row["name"], row["cloudflare_record_id"])
-        delete_dns_record_by_id(row["cloudflare_record_id"])
-
-    # Delete database row (cascades to playit_tunnels, dns_records, backups, backup_schedules)
+    # Delete database row and linked records.
     progress_store.update(db_server_id, action="delete", percent=92, step="Cleaning up database")
     try:
         with get_db() as conn:
             conn.execute("DELETE FROM servers WHERE id = ?", (db_server_id,))
         log.info(
-            "Server deprovisioned: db_id=%d, name=%s (tunnel, DNS, backup records cascaded)",
+            "Server deprovisioned: db_id=%d, name=%s (linked records cascaded)",
             db_server_id, server_name,
         )
     except sqlite3.Error as exc:
@@ -364,12 +296,12 @@ def deprovision_server(db_server_id: int) -> dict:
 
 
 def list_servers() -> list[dict]:
-    """Return all servers with their associated tunnels, DNS records, and runtime status.
+    """Return all servers with their associated tunnels and runtime status.
 
     Returns:
         A list of server dicts.  Each dict includes ``id``, ``name``,
         ``type``, ``version``, ``port``, ``status``, ``runtime_status``,
-        ``created_at``, ``tunnels``, and ``dns_records``.
+        ``created_at`` and ``tunnels``.
     """
     try:
         with get_db() as conn:
@@ -382,11 +314,6 @@ def list_servers() -> list[dict]:
                 tunnels = conn.execute(
                     "SELECT tunnel_address, local_port, external_port"
                     " FROM playit_tunnels WHERE server_id = ?",
-                    (s["id"],),
-                ).fetchall()
-                dns = conn.execute(
-                    "SELECT record_type, name, target, port"
-                    " FROM dns_records WHERE server_id = ?",
                     (s["id"],),
                 ).fetchall()
                 result.append({
@@ -407,10 +334,6 @@ def list_servers() -> list[dict]:
                         {"address": t["tunnel_address"], "local_port": t["local_port"], "external_port": t["external_port"]}
                         for t in tunnels
                     ],
-                    "dns_records": [
-                        {"type": d["record_type"], "name": d["name"], "target": d["target"], "port": d["port"]}
-                        for d in dns
-                    ],
                 })
         log.debug("Listed %d servers", len(result))
         return result
@@ -420,26 +343,29 @@ def list_servers() -> list[dict]:
 
 
 def create_server_tunnel(db_server_id: int, region: str | None = None, subscription: str | None = None, agent: str | None = None) -> dict:
-    """Create a PlayIT tunnel and Cloudflare DNS records for an existing server.
+    """Create a PlayIT tunnel for an existing server.
 
     Args:
         db_server_id: Database ID of the server.
         region: Optional server region (e.g., "Germany", "Seattle", "Japan").
                 Defaults to PLAYIT_REGION env var.
         subscription: Optional network subscription level: "premium" or "free".
-                    Defaults to PLAYIT_SUBSCRIPTION env var or "premium".
+                    Defaults to PLAYIT_SUBSCRIPTION env var or "free".
         agent: Optional agent name for the tunnel (e.g., "US-East", "EU-Central").
                Defaults to PLAYIT_AGENT env var or first available agent.
     """
     try:
         with get_db() as conn:
             row = conn.execute("SELECT name, serverport, type FROM servers WHERE id = ?", (db_server_id,)).fetchone()
+            existing = conn.execute("SELECT 1 FROM playit_tunnels WHERE server_id = ?", (db_server_id,)).fetchone()
     except sqlite3.Error as exc:
         log.error("Database error fetching server %d: %s", db_server_id, exc)
         return {"success": False, "message": f"Database error: {exc}"}
 
     if not row:
         return {"success": False, "message": f"No server found with ID {db_server_id}"}
+    if existing:
+        return {"success": False, "message": "This server already has a PlayIT tunnel", "conflict": True}
 
     server_name, server_port = row["name"], row["serverport"]
     is_bedrock = row["type"] in BEDROCK_TYPES
@@ -474,44 +400,6 @@ def create_server_tunnel(db_server_id: int, region: str | None = None, subscript
     except sqlite3.Error as exc:
         log.warning("Failed to persist tunnel record: %s", exc)
 
-    log.info("Creating Cloudflare CNAME: %s -> %s", subdomain, tunnel_address)
-    cname_result = create_dns_record(subdomain=subdomain, target=tunnel_address)
-    if not cname_result:
-        return {
-            "success": False,
-            "message": "Cloudflare CNAME creation failed",
-            "tunnel_address": tunnel_address,
-            "external_port": external_port,
-        }
-
-    dns_name, cname_cf_id = cname_result
-
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO dns_records"
-                " (server_id, record_type, name, target, cloudflare_record_id)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (db_server_id, "CNAME", dns_name, tunnel_address, cname_cf_id),
-            )
-    except sqlite3.Error as exc:
-        log.warning("Failed to persist CNAME record: %s", exc)
-
-    if external_port and not is_bedrock:
-        srv_cf_id = create_srv_record(subdomain=subdomain, target=tunnel_address, port=external_port)
-        if srv_cf_id:
-            srv_name = f"_minecraft._tcp.{dns_name}"
-            try:
-                with get_db() as conn:
-                    conn.execute(
-                        "INSERT INTO dns_records"
-                        " (server_id, record_type, name, target, port, cloudflare_record_id)"
-                        " VALUES (?, ?, ?, ?, ?, ?)",
-                        (db_server_id, "SRV", srv_name, tunnel_address, external_port, srv_cf_id),
-                    )
-            except sqlite3.Error as exc:
-                log.warning("Failed to persist SRV record: %s", exc)
-
     # A tunnel now exists, so this server is no longer local-only.
     try:
         with get_db() as conn:
@@ -521,101 +409,12 @@ def create_server_tunnel(db_server_id: int, region: str | None = None, subscript
 
     log.info(
         "Tunnel created for server db_id=%d: connect_address=%s, external_port=%s",
-        db_server_id, dns_name, external_port,
+        db_server_id, tunnel_address, external_port,
     )
     return {
         "success": True,
-        "message": "Tunnel and DNS records created successfully",
+        "message": "PlayIT tunnel created successfully",
         "tunnel_address": tunnel_address,
         "external_port": external_port,
-        "connect_address": dns_name,
-    }
-
-
-def rename_server_subdomain(db_server_id: int, new_subdomain: str) -> dict:
-    """Delete old Cloudflare DNS records and create new ones under a new subdomain."""
-    try:
-        with get_db() as conn:
-            server_row = conn.execute("SELECT id, type FROM servers WHERE id = ?", (db_server_id,)).fetchone()
-            if not server_row:
-                return {"success": False, "message": f"No server found with ID {db_server_id}"}
-            old_dns_rows = conn.execute(
-                "SELECT cloudflare_record_id, record_type, name"
-                " FROM dns_records WHERE server_id = ?",
-                (db_server_id,),
-            ).fetchall()
-            tunnel_row = conn.execute(
-                "SELECT tunnel_address, external_port FROM playit_tunnels WHERE server_id = ?",
-                (db_server_id,),
-            ).fetchone()
-    except sqlite3.Error as exc:
-        log.error("Database error fetching server %d: %s", db_server_id, exc)
-        return {"success": False, "message": f"Database error: {exc}"}
-
-    if not tunnel_row:
-        return {"success": False, "message": "No tunnel found for this server — create one first"}
-
-    tunnel_address, external_port = tunnel_row["tunnel_address"], tunnel_row["external_port"]
-    is_bedrock = server_row["type"] in BEDROCK_TYPES
-
-    for row in old_dns_rows:
-        log.info("Deleting old DNS record: type=%s name=%s cf_id=%s", row["record_type"], row["name"], row["cloudflare_record_id"])
-        delete_dns_record_by_id(row["cloudflare_record_id"])
-
-    try:
-        with get_db() as conn:
-            conn.execute("DELETE FROM dns_records WHERE server_id = ?", (db_server_id,))
-    except sqlite3.Error as exc:
-        log.warning("Failed to delete old DNS records from DB: %s", exc)
-
-    log.info("Creating Cloudflare CNAME: %s -> %s", new_subdomain, tunnel_address)
-    cname_result = create_dns_record(subdomain=new_subdomain, target=tunnel_address)
-    if not cname_result:
-        return {"success": False, "message": "Cloudflare CNAME creation failed"}
-
-    dns_name, cname_cf_id = cname_result
-
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO dns_records"
-                " (server_id, record_type, name, target, cloudflare_record_id)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (db_server_id, "CNAME", dns_name, tunnel_address, cname_cf_id),
-            )
-    except sqlite3.Error as exc:
-        log.warning("Failed to persist new CNAME record: %s", exc)
-
-    if external_port and not is_bedrock:
-        srv_cf_id = create_srv_record(subdomain=new_subdomain, target=tunnel_address, port=external_port)
-        if srv_cf_id:
-            srv_name = f"_minecraft._tcp.{dns_name}"
-            try:
-                with get_db() as conn:
-                    conn.execute(
-                        "INSERT INTO dns_records"
-                        " (server_id, record_type, name, target, port, cloudflare_record_id)"
-                        " VALUES (?, ?, ?, ?, ?, ?)",
-                        (db_server_id, "SRV", srv_name, tunnel_address, external_port, srv_cf_id),
-                    )
-            except sqlite3.Error as exc:
-                log.warning("Failed to persist new SRV record: %s", exc)
-
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "UPDATE playit_tunnels SET tunnel_name = ? WHERE server_id = ?",
-                (new_subdomain, db_server_id),
-            )
-    except sqlite3.Error as exc:
-        log.warning("Failed to update tunnel_name: %s", exc)
-
-    log.info(
-        "Subdomain renamed for server db_id=%d: new connect_address=%s",
-        db_server_id, dns_name,
-    )
-    return {
-        "success": True,
-        "message": "Subdomain renamed successfully",
-        "connect_address": dns_name,
+        "connect_address": tunnel_address,
     }
