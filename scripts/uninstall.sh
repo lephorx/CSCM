@@ -7,6 +7,7 @@
 #   - every Minecraft server container CSCM created (label cscm.managed=true)
 #   - the CSCM dashboard containers, their Docker network and locally built images
 #   - the installation directory, including .env with your saved credentials
+#     (enter its path, or let the script search this computer for it)
 #   - optionally: world data, backups and the database (asks separately)
 #   - optionally: the downloaded Minecraft and Playit images
 #
@@ -56,6 +57,61 @@ safe_dir() {
   esac
 }
 
+# A CSCM installation has the compose file and CSCM's own Docker manager.
+is_cscm_dir() {
+  [ -f "$1/docker-compose.yml" ] && grep -q 'cscm.managed' "$1/backend/docker_manager.py" 2>/dev/null
+}
+
+# Print every CSCM installation found, one path per line.
+find_installs() {
+  say "Checking Docker for CSCM containers…"
+  docker ps -a --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null \
+    | sort -u | while IFS= read -r dir; do
+      if [ -n "$dir" ] && is_cscm_dir "$dir"; then printf '%s\n' "$dir"; fi
+    done
+  for root in "$HOME" /opt /srv; do
+    [ -d "$root" ] || continue
+    say "Searching $root… (this can take a few minutes)"
+    find "$root" \( -name node_modules -o -name .git -o -name Library -o -name .Trash \
+      -o -name .cache -o -name .npm -o -name .docker -o -name proc \) -prune \
+      -o -type f -path '*/backend/docker_manager.py' -print 2>/dev/null \
+      | while IFS= read -r file; do
+        dir=$(dirname -- "$(dirname -- "$file")")
+        if is_cscm_dir "$dir"; then printf '%s\n' "$dir"; fi
+      done
+  done
+}
+
+# Ask for the installation directory, or search for it.
+choose_install() {
+  default=
+  is_cscm_dir "$HOME/cscm" && default=$HOME/cscm
+  ask "CSCM installation directory (or 's' to search this computer)" "${default:-s}"
+  case "$ANSWER" in
+    s|S|search) ;;
+    *) INSTALL_DIR=${ANSWER%/}; return ;;
+  esac
+
+  say ""
+  say "Searching for CSCM installations. This will take a while, depending on how many"
+  say "files you have. You may be asked to allow Terminal to access some folders."
+  found=$(find_installs | sort -u)
+  [ -n "$found" ] || fail "No CSCM installation found. Run this again and enter its path."
+
+  say ""
+  say "Found:"
+  i=0
+  printf '%s\n' "$found" | while IFS= read -r dir; do
+    i=$((i + 1))
+    say "  $i) $dir"
+  done
+  count=$(printf '%s\n' "$found" | grep -c .)
+  ask "Number of the installation to remove" 1
+  case "$ANSWER" in *[!0-9]*|'') fail "Please enter a number." ;; esac
+  [ "$ANSWER" -ge 1 ] && [ "$ANSWER" -le "$count" ] || fail "Please choose 1 to $count."
+  INSTALL_DIR=$(printf '%s\n' "$found" | sed -n "${ANSWER}p")
+}
+
 # Container-created files can belong to root (e.g. on Linux); fall back to sudo.
 remove_dir() {
   [ -e "$1" ] || return 0
@@ -75,11 +131,11 @@ say "Playit or Cloudflare. That removes their tunnels and DNS records, which thi
 say "script cannot reach."
 say ""
 
-ask "CSCM installation directory" "$HOME/cscm"
-INSTALL_DIR=${ANSWER%/}
+INSTALL_DIR=
+choose_install
 safe_dir "$INSTALL_DIR" || fail "Refusing to use '$INSTALL_DIR'. Give the absolute path of the CSCM folder."
-[ -f "$INSTALL_DIR/docker-compose.yml" ] && [ -d "$INSTALL_DIR/backend" ] \
-  || fail "$INSTALL_DIR does not look like a CSCM installation (no docker-compose.yml / backend)."
+is_cscm_dir "$INSTALL_DIR" \
+  || fail "$INSTALL_DIR does not look like a CSCM installation. Run this again and choose 's' to search."
 
 DB_DIR=
 SERVER_DIR=
