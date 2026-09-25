@@ -14,8 +14,10 @@ working tree.
 
 1. Copy `.env.example` to `.env` and set `SERVERS_DIR_HOST` and
    `BACKUPS_DIR_HOST` to absolute paths on the Docker host. Configure the
-   PlayIT values if you want public addresses. Local-only
-   servers do not need those credentials.
+   PlayIT values if you want public addresses. Add the optional
+   `CLOUDFLARE_*` credentials to use a custom DNS name by default. Without
+   them, players connect through the PlayIT address. Local-only servers
+   do not need either service.
 2. Start the application:
 
    ```sh

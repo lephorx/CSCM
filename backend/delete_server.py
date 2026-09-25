@@ -4,8 +4,7 @@ Interactive CLI for deprovisioning a server by its database ID.
 
 Delegates to server_manager.deprovision_server(), which stops/removes the
 server's container, deletes its data directory, removes the PlayIT tunnel
-and deletes the database row (cascading to
-linked tunnels and backups).
+and any managed DNS records, and deletes the database row.
 
 Usage:
     python delete_server.py <db_server_id>

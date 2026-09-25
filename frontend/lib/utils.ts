@@ -57,14 +57,21 @@ export function parsePlayers(
   return parsePlayersRaw(stats?.players_raw)
 }
 
-// Some endpoints (notably GET /servers/<id>) may omit tunnels
+// Older API responses may omit networking arrays.
 // when a server has none, rather than returning an empty array.
 export function normalizeServer(raw: Server): Server {
   return {
     ...raw,
     tunnels: raw.tunnels ?? [],
+    dns_records: raw.dns_records ?? [],
     local_only: raw.local_only ?? false,
   }
+}
+
+export function serverConnectAddress(server: Server): string | null {
+  const cname = server.dns_records?.find((record) => record.type === "CNAME")
+  const srvReady = server.type === "bedrock" || server.dns_records?.some((record) => record.type === "SRV")
+  return (cname && srvReady ? cname.name : null) ?? server.tunnels?.[0]?.address ?? null
 }
 
 export function formatBytes(bytes: number | null | undefined): string {

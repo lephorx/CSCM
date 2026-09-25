@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/dialog"
 import type { Server, ServerStats } from "@/lib/types"
 import { api } from "@/lib/api"
-import { parsePlayers } from "@/lib/utils"
+import { parsePlayers, serverConnectAddress } from "@/lib/utils"
 
 interface Props {
   server: Server
@@ -118,7 +118,7 @@ export function ServerCard({ server, stats, onRefresh }: Props) {
         ) : (
           server.tunnels.length > 0 && (
             <div className="text-xs text-muted-foreground">
-              <p className="truncate">{server.tunnels[0].address}</p>
+              <p className="truncate">{serverConnectAddress(server)}</p>
               {server.type === "bedrock" && server.tunnels.length > 0 && (
                 <p className="truncate font-medium text-foreground">
                   Port {server.tunnels[0].external_port}

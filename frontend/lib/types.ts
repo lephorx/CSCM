@@ -4,6 +4,13 @@ export interface Tunnel {
   external_port: number
 }
 
+export interface DnsRecord {
+  type: string
+  name: string
+  target: string
+  port: number | null
+}
+
 export type RuntimeStatus =
   | "not_created"
   | "stopped"
@@ -26,6 +33,8 @@ export interface Server {
   runtime_status: RuntimeStatus
   created_at: string
   tunnels: Tunnel[]
+  dns_records: DnsRecord[]
+  cloudflare_available?: boolean
   local_only?: boolean
 }
 

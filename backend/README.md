@@ -87,7 +87,7 @@ lives in a single local SQLite file. There is no external database to provision 
   is running, readable from disk when it's stopped.
 - **Backups**: on-demand and cron-scheduled zip backups with retention pruning, plus
   one-call restore.
-- **Networking**: PlayIT.gg tunnel automation so players connect through the address assigned by PlayIT.
+- **Networking**: PlayIT.gg tunnels, with Cloudflare custom DNS names when credentials are configured. Without Cloudflare, players connect through the PlayIT address.
 - **File management**: browse, upload, download, and delete files inside a server's data
   directory directly through the API.
 - **Local auth**: single-admin JWT + TOTP (2FA) authentication, no external identity
@@ -99,6 +99,7 @@ lives in a single local SQLite file. There is no external database to provision 
 - **Python 3.12+** (only if running outside Docker).
 - A **PlayIT.gg** account (for public tunnels) — optional
   if you only need local/LAN access. Public tunnel creation requires these credentials.
+- **Cloudflare** credentials are optional. When configured, CSCM creates custom DNS names by default.
 - No external database — SQLite ships with Python.
 
 ## Quick Start
@@ -162,6 +163,8 @@ All configuration is via environment variables (see `.env.example`).
 | `PLAYIT_SUBSCRIPTION`                                                  | `free`                             | `premium` or `free`.                                                                                                                                                                          |
 | `PLAYIT_REGION`                                                        | `Germany`                             | Tunnel region (premium only).                                                                                                                                                                 |
 | `PLAYIT_AGENT`                                                         | —                                     | Specific PlayIT agent name; first available if unset.                                                                                                                                         |
+| `CLOUDFLARE_ENABLED`                                                   | `auto`                                | `auto` uses Cloudflare when credentials are complete; `false` uses PlayIT only. |
+| `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_BASE_DOMAIN` | — | Optional Cloudflare DNS credentials and domain. |
 | `FLASK_HOST` / `FLASK_PORT`                                            | `0.0.0.0` / `5000`                    | Bind address for the API.                                                                                                                                                                     |
 | `FLASK_DEBUG`                                                          | `false`                               | Flask debug mode (dev only).                                                                                                                                                                  |
 | `JWT_LIFETIME_HOURS`                                                   | `8`                                   | Login session length.                                                                                                                                                                         |
@@ -187,7 +190,7 @@ authentication data. Initialize it with:
 python scripts/init_db.py
 ```
 
-This creates `servers`, `playit_tunnels`, `backups`, `backup_schedules`,
+This creates `servers`, `playit_tunnels`, `dns_records`, `backups`, `backup_schedules`,
 `bedrock_player_events` (app data) and `users`, `app_config` (auth data, created by
 `auth_manager`). `app.py` also calls this automatically on startup, so a manual run is only
 needed for local development outside Docker.
@@ -327,7 +330,7 @@ SRV-based port discovery. See the caveats under `POST /api/servers` below.
 
 #### `GET /api/servers`
 
-Lists every server with its tunnels and live `runtime_status`.
+Lists every server with its tunnels, optional DNS records, and live `runtime_status`.
 
 ```json
 {
@@ -352,7 +355,8 @@ Lists every server with its tunnels and live `runtime_status`.
           "local_port": 25565,
           "external_port": 34567
         }
-      ]
+      ],
+      "dns_records": []
     }
   ]
 }
@@ -364,7 +368,7 @@ Lists every server with its tunnels and live `runtime_status`.
 #### `GET /api/servers/<id>`
 
 Full detail for one server, including `runtime_status`, `port`, `mem_min`, `mem_max`,
-`loader_version`, and `tunnels` (excludes the RCON password).
+`loader_version`, `tunnels`, and `dns_records` (excludes the RCON password).
 
 Example response:
 
@@ -391,7 +395,7 @@ Example response:
 
 #### `POST /api/servers`
 
-Provisions a full stack: SQLite record → Docker container → PlayIT tunnel. This is synchronous but fast — `docker run` returns in seconds; jar
+Provisions a full stack: SQLite record → Docker container → PlayIT tunnel → optional Cloudflare DNS. This is synchronous but fast — `docker run` returns in seconds; jar
 download/world generation happen inside the container afterward. Poll
 `GET /api/servers/<id>` and watch `runtime_status` go `starting` → `healthy`.
 
@@ -660,8 +664,8 @@ Body: `{"name": "New Name"}`. Database-only rename (does not affect the containe
 
 Body: `{"port": 25566}`. Updates the DB then **recreates the container** (stop → remove →
 run) with the new port mapping; world data persists on the bind-mounted volume. Returns a
-warning that any existing PlayIT tunnel still points at the old port — call
-`POST /api/servers/<id>/tunnel` again if you need the public address updated.
+warning that any existing PlayIT tunnel still points at the old port. Update
+its local port in the PlayIT dashboard.
 
 #### `PATCH /api/servers/<id>/ram`
 
@@ -1251,9 +1255,15 @@ POST /api/servers/3/files/upload?path=mods/plugins/custom&filename=my-plugin.jar
 #### `POST /api/servers/<id>/tunnel`
 
 Body (all optional): `{"region": "Germany", "subscription": "premium", "agent": "EU-Central"}`.
-Creates a PlayIT tunnel for an existing local-only server and returns its public address.
-Java clients use the PlayIT hostname directly; Bedrock players enter its assigned port
-separately. Returns HTTP 409 if the server already has a tunnel.
+Creates a PlayIT tunnel for an existing local-only server. With Cloudflare credentials,
+CSCM also creates a custom DNS address. Without them, the PlayIT hostname is returned.
+Bedrock players enter the assigned port separately. Returns HTTP 409 if the server
+already has a tunnel.
+
+#### `PATCH /api/servers/<id>/subdomain`
+
+Body: `{"subdomain": "new-name"}`. Changes the Cloudflare DNS name for an existing
+tunnel. Available only when Cloudflare is configured.
 
 ---
 
@@ -1315,5 +1325,5 @@ new enough JRE (see [itzg's tag list](https://hub.docker.com/r/itzg/minecraft-se
 then `POST /api/servers/<id>/recreate` to rebuild the container against it — world data is
 untouched.
 
-Existing installations may still have historical Cloudflare records. CSCM no longer reads
-or changes them; remove any unwanted records from your DNS provider directly.
+Existing Cloudflare records remain available in the dashboard. CSCM removes records it
+created when their server is deleted, provided Cloudflare credentials are still configured.

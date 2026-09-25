@@ -10,11 +10,12 @@ Provisioning sequence:
     2. Create and start the Minecraft server container via docker_manager.
     3. Create a PlayIT tunnel for the server's local port.
     4. Resolve the PlayIT tunnel's external port for display.
+    5. Create Cloudflare DNS records when configured.
 
 Deprovisioning sequence:
     1. Retrieve the server record and linked resources from the database.
     2. Stop and remove the server's container; delete its data directory.
-    3. Delete the PlayIT tunnels.
+    3. Delete the PlayIT tunnels and any managed Cloudflare DNS records.
     4. Delete the database row and its linked records.
 """
 
@@ -31,6 +32,7 @@ import progress_store
 from docker_manager import BEDROCK_TYPES, SERVER_TYPES, server_data_dir
 from db import get_db
 from playit_manager import create_tunnel, delete_tunnel, lookup_minecraft_srv_port
+from cloudflare_manager import cloudflare_enabled, create_dns_record, create_srv_record, delete_dns_record_by_id
 from logger import get_logger
 
 load_dotenv()
@@ -51,6 +53,48 @@ def _split_bedrock_address(tunnel_address: str) -> tuple[str, int | None]:
         if port_str.isdigit():
             return host, int(port_str)
     return tunnel_address, None
+
+
+def _create_optional_dns(server_id: int, subdomain: str, tunnel_address: str,
+                         external_port: int | None, is_bedrock: bool) -> tuple[str, str | None]:
+    """Return the public address and any DNS warning. PlayIT always works alone."""
+    if not cloudflare_enabled():
+        return tunnel_address, None
+    if not is_bedrock and not external_port:
+        return tunnel_address, "PlayIT port lookup failed; Cloudflare DNS was skipped"
+
+    cname = create_dns_record(subdomain=subdomain, target=tunnel_address)
+    if not cname:
+        return tunnel_address, "Cloudflare DNS setup failed; use the PlayIT address"
+    dns_name, cname_id = cname
+    srv_id = None
+    if not is_bedrock:
+        srv_id = create_srv_record(subdomain=subdomain, target=tunnel_address, port=external_port)
+        if not srv_id:
+            delete_dns_record_by_id(cname_id)
+            return tunnel_address, "Cloudflare SRV setup failed; use the PlayIT address"
+
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO dns_records (server_id, record_type, name, target, cloudflare_record_id)"
+                " VALUES (?, 'CNAME', ?, ?, ?)",
+                (server_id, dns_name, tunnel_address, cname_id),
+            )
+            if srv_id:
+                conn.execute(
+                    "INSERT INTO dns_records"
+                    " (server_id, record_type, name, target, port, cloudflare_record_id)"
+                    " VALUES (?, 'SRV', ?, ?, ?, ?)",
+                    (server_id, f"_minecraft._tcp.{dns_name}", tunnel_address, external_port, srv_id),
+                )
+    except sqlite3.Error as exc:
+        log.error("Could not save Cloudflare record IDs: %s", exc)
+        if srv_id:
+            delete_dns_record_by_id(srv_id)
+        delete_dns_record_by_id(cname_id)
+        return tunnel_address, "Cloudflare DNS setup could not be saved; use the PlayIT address"
+    return dns_name, None
 
 
 def _create_server_record(
@@ -103,7 +147,7 @@ def _provision_resources(
     subscription: str | None = None,
     agent: str | None = None,
 ) -> dict:
-    """Create the Docker container and optional PlayIT tunnel.
+    """Create the Docker container, PlayIT tunnel, and optional DNS records.
 
     Updates progress_store throughout so GET /api/servers/<id>/progress
     can return live percentages to polling clients.
@@ -185,16 +229,23 @@ def _provision_resources(
     except sqlite3.Error as exc:
         log.warning("Failed to persist tunnel record: %s", exc)
 
-    log.info("Server provisioned successfully: db_id=%d, connect_address=%s", db_server_id, tunnel_address)
+    progress_store.update(db_server_id, action="provision", percent=65,
+                          step="Setting up optional Cloudflare DNS")
+    connect_address, dns_warning = _create_optional_dns(
+        db_server_id, subdomain, tunnel_address, external_port, is_bedrock,
+    )
+    log.info("Server provisioned successfully: db_id=%d, connect_address=%s", db_server_id, connect_address)
     progress_store.update(db_server_id, action="provision", percent=100,
-                          step="Server provisioned successfully", status="completed")
+                          step="Server provisioned successfully", status="completed",
+                          message=dns_warning)
     return {
         "success": True,
         "message": "Server provisioned successfully",
         "server_id": db_server_id,
-        "connect_address": tunnel_address,
+        "connect_address": connect_address,
         "tunnel_address": tunnel_address,
         "external_port": external_port,
+        **({"warning": dns_warning} if dns_warning else {}),
         **({"note": "Bedrock has no SRV auto-discovery — players must enter the port manually"} if is_bedrock else {}),
     }
 
@@ -248,6 +299,10 @@ def deprovision_server(db_server_id: int) -> dict:
                 "SELECT tunnel_name FROM playit_tunnels WHERE server_id = ?",
                 (db_server_id,),
             ).fetchall()
+            dns_rows = conn.execute(
+                "SELECT cloudflare_record_id FROM dns_records WHERE server_id = ?",
+                (db_server_id,),
+            ).fetchall()
     except sqlite3.Error as exc:
         log.error("Database error while fetching server record: %s", exc)
         return {"success": False, "message": f"Database error: {exc}"}
@@ -277,6 +332,15 @@ def deprovision_server(db_server_id: int) -> dict:
         if not success:
             log.warning("Could not delete PlayIT tunnel '%s' — may need manual removal", tunnel_name)
 
+    if dns_rows and cloudflare_enabled():
+        progress_store.update(db_server_id, action="delete", percent=75,
+                              step="Removing Cloudflare DNS records")
+        for row in dns_rows:
+            if row["cloudflare_record_id"]:
+                delete_dns_record_by_id(row["cloudflare_record_id"])
+    elif dns_rows:
+        log.warning("Cloudflare is disabled; existing DNS records for server %d need manual removal", db_server_id)
+
     # Delete database row and linked records.
     progress_store.update(db_server_id, action="delete", percent=92, step="Cleaning up database")
     try:
@@ -296,12 +360,12 @@ def deprovision_server(db_server_id: int) -> dict:
 
 
 def list_servers() -> list[dict]:
-    """Return all servers with their associated tunnels and runtime status.
+    """Return all servers with their tunnels, DNS records, and runtime status.
 
     Returns:
         A list of server dicts.  Each dict includes ``id``, ``name``,
         ``type``, ``version``, ``port``, ``status``, ``runtime_status``,
-        ``created_at`` and ``tunnels``.
+        ``created_at``, ``tunnels``, and ``dns_records``.
     """
     try:
         with get_db() as conn:
@@ -309,11 +373,16 @@ def list_servers() -> list[dict]:
                 "SELECT id, name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, status, local_only, createdat"
                 " FROM servers ORDER BY id"
             ).fetchall()
+            cf_available = cloudflare_enabled()
             result = []
             for s in servers:
                 tunnels = conn.execute(
                     "SELECT tunnel_address, local_port, external_port"
                     " FROM playit_tunnels WHERE server_id = ?",
+                    (s["id"],),
+                ).fetchall()
+                dns = conn.execute(
+                    "SELECT record_type, name, target, port FROM dns_records WHERE server_id = ? ORDER BY id DESC",
                     (s["id"],),
                 ).fetchall()
                 result.append({
@@ -328,11 +397,16 @@ def list_servers() -> list[dict]:
                     "mem_max": s["mem_max_gb"],
                     "status": s["status"],
                     "local_only": bool(s["local_only"]),
+                    "cloudflare_available": cf_available,
                     "runtime_status": docker_manager.runtime_status(s["id"]),
                     "created_at": s["createdat"],
                     "tunnels": [
                         {"address": t["tunnel_address"], "local_port": t["local_port"], "external_port": t["external_port"]}
                         for t in tunnels
+                    ],
+                    "dns_records": [
+                        {"type": d["record_type"], "name": d["name"], "target": d["target"], "port": d["port"]}
+                        for d in dns
                     ],
                 })
         log.debug("Listed %d servers", len(result))
@@ -343,7 +417,7 @@ def list_servers() -> list[dict]:
 
 
 def create_server_tunnel(db_server_id: int, region: str | None = None, subscription: str | None = None, agent: str | None = None) -> dict:
-    """Create a PlayIT tunnel for an existing server.
+    """Create a PlayIT tunnel and optional Cloudflare DNS for an existing server.
 
     Args:
         db_server_id: Database ID of the server.
@@ -407,14 +481,63 @@ def create_server_tunnel(db_server_id: int, region: str | None = None, subscript
     except sqlite3.Error as exc:
         log.warning("Failed to clear local_only flag for db_id=%d: %s", db_server_id, exc)
 
+    connect_address, dns_warning = _create_optional_dns(
+        db_server_id, subdomain, tunnel_address, external_port, is_bedrock,
+    )
     log.info(
         "Tunnel created for server db_id=%d: connect_address=%s, external_port=%s",
-        db_server_id, tunnel_address, external_port,
+        db_server_id, connect_address, external_port,
     )
     return {
         "success": True,
         "message": "PlayIT tunnel created successfully",
         "tunnel_address": tunnel_address,
         "external_port": external_port,
-        "connect_address": tunnel_address,
+        "connect_address": connect_address,
+        **({"warning": dns_warning} if dns_warning else {}),
+    }
+
+
+def rename_server_subdomain(db_server_id: int, new_subdomain: str) -> dict:
+    """Change the optional Cloudflare name without replacing the PlayIT tunnel."""
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", new_subdomain):
+        return {"success": False, "message": "Invalid subdomain label", "invalid": True}
+    if not cloudflare_enabled():
+        return {"success": False, "message": "Cloudflare is not configured", "invalid": True}
+    with get_db() as conn:
+        server = conn.execute("SELECT type FROM servers WHERE id = ?", (db_server_id,)).fetchone()
+        if not server:
+            return {"success": False, "message": f"No server found with ID {db_server_id}"}
+        tunnel = conn.execute(
+            "SELECT tunnel_address, external_port FROM playit_tunnels WHERE server_id = ?",
+            (db_server_id,),
+        ).fetchone()
+        old_dns = conn.execute(
+            "SELECT id, record_type, name, cloudflare_record_id FROM dns_records WHERE server_id = ?",
+            (db_server_id,),
+        ).fetchall()
+    if not tunnel:
+        return {"success": False, "message": "No PlayIT tunnel exists for this server", "invalid": True}
+    if any(row["record_type"] == "CNAME" and row["name"].split(".")[0] == new_subdomain
+           for row in old_dns):
+        return {"success": True, "message": "Cloudflare subdomain is already set"}
+
+    address, warning = _create_optional_dns(
+        db_server_id, new_subdomain, tunnel["tunnel_address"],
+        tunnel["external_port"], server["type"] in BEDROCK_TYPES,
+    )
+    if warning:
+        return {"success": False, "message": warning}
+    cleanup_failed = False
+    for row in old_dns:
+        if row["cloudflare_record_id"] and not delete_dns_record_by_id(row["cloudflare_record_id"]):
+            cleanup_failed = True
+            continue
+        with get_db() as conn:
+            conn.execute("DELETE FROM dns_records WHERE id = ?", (row["id"],))
+    return {
+        "success": True,
+        "connect_address": address,
+        "message": "Cloudflare subdomain updated",
+        **({"warning": "Some old DNS records need manual removal"} if cleanup_failed else {}),
     }

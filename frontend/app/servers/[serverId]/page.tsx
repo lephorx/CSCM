@@ -40,7 +40,7 @@ import { Label } from "@/components/ui/label"
 import { VersionPicker } from "@/components/VersionPicker"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
-import { normalizeServer } from "@/lib/utils"
+import { normalizeServer, serverConnectAddress } from "@/lib/utils"
 import type { Server, ServerStats as Stats } from "@/lib/types"
 
 const POLL_INTERVAL = 5000
@@ -71,6 +71,9 @@ export default function ServerDetailPage() {
   )
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [tunneling, setTunneling] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState("")
+  const [renaming, setRenaming] = useState(false)
 
   // Settings edit state
   type EditField = "name" | "port" | "ram" | "version" | null
@@ -251,8 +254,8 @@ export default function ServerDetailPage() {
   async function handleSetupTunnel() {
     setTunneling(true)
     try {
-      await api.control.tunnel(serverId)
-      toast.success("Playit tunnel ready")
+      const result = await api.control.tunnel(serverId) as { warning?: string }
+      toast.success(result.warning ?? "Public address ready")
       await refreshServerMeta()
     } catch (err) {
       toast.error(
@@ -260,6 +263,22 @@ export default function ServerDetailPage() {
       )
     } finally {
       setTunneling(false)
+    }
+  }
+
+  async function handleRenameSubdomain(e: React.FormEvent) {
+    e.preventDefault()
+    if (!renameValue.trim()) return
+    setRenaming(true)
+    try {
+      const result = await api.control.subdomain(serverId, renameValue.trim()) as { warning?: string }
+      toast.success(result.warning ?? "Custom address updated")
+      setRenameOpen(false)
+      await refreshServerMeta()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update address")
+    } finally {
+      setRenaming(false)
     }
   }
 
@@ -463,17 +482,30 @@ export default function ServerDetailPage() {
             </Button>
           </div>
         ) : server.tunnels.length > 0 ? (
-          <div className="mb-6 border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+          <div className="mb-6 flex items-center justify-between gap-4 border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            <div>
             <span className="font-medium text-foreground">
               {server.type === "bedrock" ? "Address: " : "Connect: "}
             </span>
-            {server.tunnels[0].address}
+            {serverConnectAddress(server)}
+            {server.dns_records.some((record) => record.type === "CNAME") && (
+              <p className="mt-1 text-[11px]">Playit address: {server.tunnels[0].address}</p>
+            )}
             {server.type === "bedrock" && (
               <>
                 <span className="ml-4 font-medium text-foreground">Port: </span>
                 {server.tunnels[0].external_port ?? "See Playit dashboard"}
                 <p className="mt-1 text-[11px]">Enter the address and port separately in Bedrock.</p>
               </>
+            )}
+            </div>
+            {server.cloudflare_available && (
+              <Button size="sm" variant="outline" onClick={() => {
+                setRenameValue(server.dns_records.find((record) => record.type === "CNAME")?.name.split(".")[0] ?? server.slug)
+                setRenameOpen(true)
+              }}>
+                <Pencil className="size-3.5" /> {server.dns_records.some((record) => record.type === "CNAME") ? "Rename" : "Add custom address"}
+              </Button>
             )}
           </div>
         ) : (
@@ -800,6 +832,24 @@ export default function ServerDetailPage() {
               Delete Server
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Custom Cloudflare address */}
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader><DialogTitle>Rename custom address</DialogTitle></DialogHeader>
+          <form onSubmit={handleRenameSubdomain} className="space-y-4 pt-1">
+            <Label htmlFor="custom-subdomain">Subdomain</Label>
+            <Input id="custom-subdomain" value={renameValue} onChange={(e) => setRenameValue(e.target.value)} disabled={renaming} />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button>
+              <Button type="submit" disabled={renaming || !renameValue.trim()}>
+                {renaming && <Loader2 className="size-3.5 animate-spin" />}
+                Save
+              </Button>
+            </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

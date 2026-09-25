@@ -1,5 +1,5 @@
 -- CSCM-Tool local SQLite schema.
--- Holds both app data (servers, tunnels, backups) and auth data
+-- Holds both app data (servers, tunnels, optional DNS records, backups) and auth data
 -- (users, app_config — created separately by auth_manager.initialize_auth_storage()).
 
 PRAGMA foreign_keys = ON;
@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS playit_tunnels (
     tunnel_address TEXT,
     local_port     INTEGER,
     external_port  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS dns_records (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id            INTEGER NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+    record_type          TEXT,
+    name                 TEXT,
+    target               TEXT,
+    port                 INTEGER,
+    cloudflare_record_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS backups (

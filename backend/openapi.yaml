@@ -3,7 +3,7 @@ info:
   title: CSCM Tool API
   description: >
     Self-contained REST API for provisioning and managing Minecraft servers as
-    Docker containers, with PlayIT tunnel automation.
+    Docker containers, with PlayIT tunnels and optional Cloudflare DNS.
   version: "2.0.0"
 servers:
   - url: http://localhost:5000
@@ -53,6 +53,9 @@ components:
           description: >
             If true, no PlayIT tunnel was created — reachable only on
             the same network as this host.
+        cloudflare_available:
+          type: boolean
+          description: Whether optional Cloudflare DNS can be configured.
         runtime_status:
           type: string
           enum: [not_created, stopped, starting, healthy, unhealthy, running]
@@ -65,6 +68,16 @@ components:
               address: { type: string }
               local_port: { type: integer }
               external_port: { type: integer, nullable: true }
+        dns_records:
+          type: array
+          description: Cloudflare records, empty when Cloudflare is not configured.
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              name: { type: string }
+              target: { type: string }
+              port: { type: integer, nullable: true }
   parameters:
     ServerId:
       name: id
@@ -956,7 +969,8 @@ paths:
       tags: [Networking]
       summary: Create a PlayIT tunnel for an existing server
       description: >
-        Returns the PlayIT address. Java clients use PlayIT-provided SRV discovery;
+        Creates a PlayIT tunnel. Configured Cloudflare credentials add a custom
+        DNS address by default. Without Cloudflare, the PlayIT address is returned.
         Bedrock players must enter the assigned port separately.
       parameters: [{ $ref: "#/components/parameters/ServerId" }]
       requestBody:
@@ -970,3 +984,19 @@ paths:
                 agent: { type: string }
       responses:
         { "201": { description: Created }, "404": { description: Not found }, "409": { description: Tunnel already exists } }
+
+  /api/servers/{id}/subdomain:
+    patch:
+      tags: [Networking]
+      summary: Rename the optional Cloudflare subdomain
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subdomain]
+              properties: { subdomain: { type: string } }
+      responses:
+        { "200": { description: Updated }, "400": { description: Invalid request or Cloudflare not configured }, "404": { description: Not found }, "502": { description: DNS update failed } }

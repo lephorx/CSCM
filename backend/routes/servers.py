@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 import docker_manager
 import progress_store
 import properties_manager
+from cloudflare_manager import cloudflare_enabled
 from auth_helpers import authorize
 from db import get_db
 from docker_manager import SERVER_TYPES
@@ -19,6 +20,7 @@ from server_manager import (
     deprovision_server,
     list_servers,
     provision_server,
+    rename_server_subdomain,
 )
 
 log = get_logger("api")
@@ -82,13 +84,22 @@ def get_server_detail(server_id: int):
             "SELECT tunnel_address, local_port, external_port FROM playit_tunnels WHERE server_id = ?",
             (server_id,),
         ).fetchall()
+        dns = conn.execute(
+            "SELECT record_type, name, target, port FROM dns_records WHERE server_id = ? ORDER BY id DESC",
+            (server_id,),
+        ).fetchall()
     if not row:
         return jsonify({"success": False, "message": "Server not found"}), 404
 
     server = _serialize_server(row)
+    server["cloudflare_available"] = cloudflare_enabled()
     server["tunnels"] = [
         {"address": t["tunnel_address"], "local_port": t["local_port"], "external_port": t["external_port"]}
         for t in tunnels
+    ]
+    server["dns_records"] = [
+        {"type": d["record_type"], "name": d["name"], "target": d["target"], "port": d["port"]}
+        for d in dns
     ]
     return jsonify({"success": True, "server": server})
 
@@ -405,6 +416,24 @@ def create_tunnel_endpoint(server_id: int):
         return jsonify(result), 409
     log.error("Tunnel creation failed: %s", result.get("message"))
     return jsonify(result), 500
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/servers/<id>/subdomain
+# Body: { "subdomain": "new-name" }
+# ---------------------------------------------------------------------------
+@servers_bp.route("/servers/<int:server_id>/subdomain", methods=["PATCH"])
+def rename_subdomain(server_id: int):
+    auth_err = authorize()
+    if auth_err:
+        return auth_err
+    body = request.get_json(silent=True) or {}
+    result = rename_server_subdomain(server_id, str(body.get("subdomain", "")).strip().lower())
+    if result["success"]:
+        return jsonify(result), 200
+    if "No server found" in result.get("message", ""):
+        return jsonify(result), 404
+    return jsonify(result), 400 if result.get("invalid") else 502
 
 
 # ---------------------------------------------------------------------------
