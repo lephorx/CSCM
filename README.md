@@ -6,9 +6,9 @@ Docker Compose starts both processes as one stack; only the dashboard port is
 published. The API, database, Docker access, backups, and server files remain
 inside the stack or on the configured host paths.
 
-The repository combines the complete histories of `CSCM-Tool` and
-`CSCM-Webpage`. Their previously uncommitted changes are included in this
-working tree.
+The repository combines the development histories of `CSCM-Tool` and
+`CSCM-Webpage`. Old runtime configuration, database and certificate files were
+removed from the public history.
 
 ## Guided installation
 
