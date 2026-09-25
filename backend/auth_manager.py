@@ -19,6 +19,7 @@ load_dotenv()
 
 AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", Path(__file__).with_name("auth.db")))
 JWT_LIFETIME_HOURS = int(os.getenv("JWT_LIFETIME_HOURS", "8"))
+SETUP_TTL_SECONDS = 15 * 60
 
 
 def _connect() -> sqlite3.Connection:
@@ -50,6 +51,17 @@ def initialize_auth_storage() -> None:
             CREATE TABLE IF NOT EXISTS app_config (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_setups (
+                token TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                totp_secret TEXT NOT NULL,
+                expires_at INTEGER NOT NULL
             )
             """
         )
@@ -126,7 +138,7 @@ def has_users() -> bool:
         return row is not None
 
 
-def create_initial_user(username: str, password: str) -> dict:
+def begin_initial_user_setup(username: str, password: str) -> dict:
     normalized_username = username.strip()
     if not normalized_username:
         raise ValueError("Username is required")
@@ -138,17 +150,54 @@ def create_initial_user(username: str, password: str) -> dict:
         raise RuntimeError("Initial setup has already been completed")
 
     totp_secret = pyotp.random_base32()
+    setup_token = secrets.token_urlsafe(32)
+    setup_payload = build_totp_setup_payload(normalized_username, totp_secret)
     password_hash = generate_password_hash(password, method="scrypt")
-    created_at = _utcnow().isoformat()
+    expires_at = int(_utcnow().timestamp()) + SETUP_TTL_SECONDS
 
     with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            raise RuntimeError("Initial setup has already been completed")
+        connection.execute("DELETE FROM pending_setups WHERE expires_at <= ?", (int(_utcnow().timestamp()),))
         connection.execute(
-            "INSERT INTO users (username, password_hash, totp_secret, created_at) VALUES (?, ?, ?, ?)",
-            (normalized_username, password_hash, totp_secret, created_at),
+            "INSERT INTO pending_setups (token, username, password_hash, totp_secret, expires_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (setup_token, normalized_username, password_hash, totp_secret, expires_at),
         )
         connection.commit()
 
-    return build_totp_setup_payload(normalized_username, totp_secret)
+    return {"setup_token": setup_token, "expires_at": expires_at, **setup_payload}
+
+
+def complete_initial_user_setup(setup_token: str, otp_code: str) -> dict:
+    if not setup_token:
+        raise ValueError("Setup session is missing. Start again.")
+    if len(otp_code) != 6 or not otp_code.isdigit():
+        raise ValueError("Enter the six-digit code from your authenticator app")
+
+    with closing(_connect()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if connection.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            raise RuntimeError("Initial setup has already been completed")
+        pending = connection.execute(
+            "SELECT username, password_hash, totp_secret, expires_at"
+            " FROM pending_setups WHERE token = ?",
+            (setup_token,),
+        ).fetchone()
+        if pending is None or int(pending["expires_at"]) <= int(_utcnow().timestamp()):
+            raise ValueError("Setup session expired. Start again.")
+        if not pyotp.TOTP(str(pending["totp_secret"])).verify(otp_code, valid_window=1):
+            raise ValueError("Invalid one-time code. Try the current code from your authenticator app.")
+
+        cursor = connection.execute(
+            "INSERT INTO users (username, password_hash, totp_secret, created_at) VALUES (?, ?, ?, ?)",
+            (pending["username"], pending["password_hash"], pending["totp_secret"], _utcnow().isoformat()),
+        )
+        connection.execute("DELETE FROM pending_setups")
+        connection.commit()
+
+    return {"id": int(cursor.lastrowid), "username": str(pending["username"])}
 
 
 def build_totp_setup_payload(username: str, totp_secret: str) -> dict:

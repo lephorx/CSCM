@@ -10,6 +10,7 @@ export interface AuthUser {
 
 export interface AuthState {
   loading: boolean
+  statusError: string | null
   setupRequired: boolean
   authenticated: boolean
   user: AuthUser | null
@@ -18,6 +19,7 @@ export interface AuthState {
 export function useAuth() {
   const [state, setState] = useState<AuthState>({
     loading: true,
+    statusError: null,
     setupRequired: false,
     authenticated: false,
     user: null,
@@ -26,16 +28,19 @@ export function useAuth() {
   const checkStatus = useCallback(async () => {
     setState((s) => ({ ...s, loading: true }))
     try {
-      const { data } = await authApi.status()
+      const { ok, data } = await authApi.status()
+      if (!ok) throw new Error(data.error ?? "Authentication service is unavailable")
       setState({
         loading: false,
+        statusError: null,
         setupRequired: data.setup_required ?? false,
         authenticated: data.authenticated ?? false,
         user: data.user ?? null,
       })
-    } catch {
+    } catch (error) {
       setState({
         loading: false,
+        statusError: error instanceof Error ? error.message : "Authentication service is unavailable",
         setupRequired: false,
         authenticated: false,
         user: null,
@@ -51,6 +56,7 @@ export function useAuth() {
     saveToken(token)
     setState({
       loading: false,
+      statusError: null,
       setupRequired: false,
       authenticated: true,
       user,
@@ -61,18 +67,12 @@ export function useAuth() {
     clearToken()
     setState({
       loading: false,
+      statusError: null,
       setupRequired: false,
       authenticated: false,
       user: null,
     })
   }, [])
 
-  const onSetupComplete = useCallback(() => {
-    setState((s) => ({
-      ...s,
-      setupRequired: false,
-    }))
-  }, [])
-
-  return { ...state, onLoginSuccess, onSetupComplete, logout }
+  return { ...state, onLoginSuccess, logout, retryStatus: checkStatus }
 }

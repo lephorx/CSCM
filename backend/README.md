@@ -118,20 +118,26 @@ docker compose up --build
 Then:
 
 ```bash
-# 1. First-run setup (creates the single admin account + TOTP secret)
-curl -X POST http://localhost:5000/api/auth/setup \
+# 1. Begin first-run setup (returns setup_token + authenticator QR)
+curl -X POST http://localhost:3000/api/auth/setup \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "a-very-long-password"}'
 # Scan the returned qr_code_data_uri with an authenticator app, or use totp_secret directly.
 
-# 2. Log in
-curl -X POST http://localhost:5000/api/auth/login \
+# 2. Enter one authenticator code to create the account and receive a JWT
+curl -X POST http://localhost:3000/api/auth/setup/verify \
+  -H "Content-Type: application/json" \
+  -d '{"setup_token": "<returned-setup-token>", "otp": "123456"}'
+# Later sign-ins use /api/auth/login with username, password, and a fresh code.
+
+# 3. Log in later
+curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "a-very-long-password", "otp": "123456"}'
 # -> { "token": "...", ... }
 
-# 3. Create a server
-curl -X POST http://localhost:5000/api/servers \
+# 4. Create a server
+curl -X POST http://localhost:3000/api/servers \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{"name": "Survival SMP", "type": "paper", "version": "1.21.4", "port": 25565}'
 ```
@@ -196,15 +202,15 @@ needed for local development outside Docker.
 ## Authentication
 
 CSCM uses **local, single-admin authentication**: username + password + TOTP (2FA), issuing
-short-lived JWTs. There is no user management beyond the first account — `POST
-/api/auth/setup` can only be called once.
+short-lived JWTs. There is no user management beyond the first account.
 
-1. `POST /api/auth/setup` — create the one admin account. Returns a TOTP secret, URI, and
-   QR code (as an SVG data URI) to scan into an authenticator app (Google Authenticator,
-   Authy, 1Password, etc.).
-2. `POST /api/auth/login` — exchange username + password + current TOTP code for a JWT.
-3. Include the JWT on every subsequent request: `Authorization: Bearer <token>`.
-4. Tokens expire after `JWT_LIFETIME_HOURS` (default 8) — log in again to get a new one.
+1. `POST /api/auth/setup` — begin a 15-minute enrollment. Returns a setup token, TOTP
+   secret, URI, and QR code to scan into an authenticator app. No user is created yet.
+2. `POST /api/auth/setup/verify` — send the setup token and one current TOTP code. This
+   creates the admin account and returns a JWT, so no second code is needed at setup.
+3. Later, `POST /api/auth/login` exchanges username, password, and a current code for a JWT.
+4. Include the JWT on every subsequent request: `Authorization: Bearer <token>`.
+5. Tokens expire after `JWT_LIFETIME_HOURS` (default 8) — log in again to get a new one.
 
 If `GET /api/auth/status` reports `setup_required: true`, no account exists yet and every
 protected endpoint will return `403`.
@@ -258,17 +264,28 @@ No auth required (fails with `409` if already set up). Body:
 { "username": "admin", "password": "at-least-12-characters" }
 ```
 
-Response `201`:
+Response `202`:
 
 ```json
 {
   "success": true,
-  "message": "Initial account created. Scan the QR code and then sign in with your one-time password.",
+  "message": "Scan the QR code, then enter a one-time code to finish registration.",
+  "setup_token": "<random-setup-token>",
   "totp_secret": "BASE32SECRET",
   "totp_uri": "otpauth://totp/CSCM%20Tool:admin?secret=...",
   "qr_code_data_uri": "data:image/svg+xml;base64,..."
 }
 ```
+
+#### `POST /api/auth/setup/verify`
+
+No auth required. The setup token expires after 15 minutes. Body:
+
+```json
+{ "setup_token": "<returned-setup-token>", "otp": "123456" }
+```
+
+Response `201` includes `token`, `expires_at`, and `user` and completes registration.
 
 #### `POST /api/auth/login`
 

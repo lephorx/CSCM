@@ -9,7 +9,7 @@ import { TopNav } from "@/components/TopNav"
 import { ServerCard } from "@/components/ServerCard"
 import { ServerCreateModal } from "@/components/ServerCreateModal"
 import { ServerCreationProgress } from "@/components/ServerCreationProgress"
-import { AuthPage } from "@/components/AuthPage"
+import { AuthPage, AuthStatusError } from "@/components/AuthPage"
 import { api } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
 import { useServerCreation } from "@/hooks/useServerCreation"
@@ -21,11 +21,12 @@ const POLL_INTERVAL = 5000
 export default function DashboardPage() {
   const {
     loading: authLoading,
+    statusError,
     setupRequired,
     authenticated,
     user,
     onLoginSuccess,
-    onSetupComplete,
+    retryStatus,
     logout,
   } = useAuth()
 
@@ -105,13 +106,16 @@ export default function DashboardPage() {
     )
   }
 
+  if (statusError) {
+    return <AuthStatusError message={statusError} onRetry={retryStatus} />
+  }
+
   // Show auth page when setup is required or user is not authenticated
   if (setupRequired || !authenticated) {
     return (
       <AuthPage
         initialView={setupRequired ? "setup-form" : "login-form"}
         onLoginSuccess={onLoginSuccess}
-        onSetupComplete={onSetupComplete}
       />
     )
   }

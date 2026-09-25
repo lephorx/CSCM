@@ -23,7 +23,9 @@ working tree.
    ```
 
 3. Open `http://localhost:3000` (or the port set by `WEB_PORT`). The first
-   visit guides you through creating the local account and TOTP setup.
+   visit guides you through creating the local account. Scan the authenticator
+   QR code and enter one current six-digit code to finish registration; the
+   dashboard signs you in automatically.
 
 The dashboard proxies its API requests to `http://api:5000` inside the Compose
 network. `GET /health` on the dashboard checks the backend. The SQLite file is

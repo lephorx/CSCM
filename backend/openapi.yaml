@@ -115,7 +115,7 @@ paths:
   /api/auth/setup:
     post:
       tags: [Auth]
-      summary: Create the single admin account (one-time)
+      summary: Begin single-admin TOTP enrollment (expires after 15 minutes)
       security: []
       requestBody:
         required: true
@@ -128,8 +128,28 @@ paths:
                 username: { type: string }
                 password: { type: string, minLength: 12 }
       responses:
-        "201": { description: Created }
+        "202": { description: Pending setup token and authenticator QR code }
         "400": { description: Validation error }
+        "409": { description: Already set up }
+
+  /api/auth/setup/verify:
+    post:
+      tags: [Auth]
+      summary: Verify one TOTP code, create the admin account, and sign in
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setup_token, otp]
+              properties:
+                setup_token: { type: string }
+                otp: { type: string, pattern: "^[0-9]{6}$" }
+      responses:
+        "201": { description: Account created; JWT and user returned }
+        "400": { description: Invalid code or expired setup }
         "409": { description: Already set up }
 
   /api/auth/login:

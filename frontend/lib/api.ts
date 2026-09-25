@@ -603,6 +603,11 @@ export const authApi = {
       method: "POST",
       body: JSON.stringify({ username, password }),
     }),
+  verifySetup: (setupToken: string, otp: string) =>
+    authFetch("/api/auth/setup/verify", {
+      method: "POST",
+      body: JSON.stringify({ setup_token: setupToken, otp }),
+    }),
   login: (username: string, password: string, otp: string) =>
     authFetch("/api/auth/login", {
       method: "POST",

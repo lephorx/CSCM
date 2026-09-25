@@ -27,7 +27,6 @@ type View = "setup-form" | "setup-qr" | "login-form"
 interface Props {
   initialView: "setup-form" | "login-form"
   onLoginSuccess: (token: string, user: AuthUser) => void
-  onSetupComplete: () => void
 }
 
 // ---------------------------------------------------------------------------
@@ -42,12 +41,31 @@ function ErrorMessage({ message }: { message: string }) {
   )
 }
 
+export function AuthStatusError({
+  message,
+  onRetry,
+}: {
+  message: string
+  onRetry: () => void
+}) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="w-full max-w-sm space-y-4 rounded-xl border border-border bg-card p-6 text-center">
+        <h1 className="font-semibold">CSCM is unavailable</h1>
+        <ErrorMessage message={message} />
+        <Button onClick={onRetry}>Retry</Button>
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Setup form (first-time account creation)
 // ---------------------------------------------------------------------------
 
 interface SetupFormProps {
   onSuccess: (data: {
+    setup_token: string
     totp_secret: string
     totp_uri: string
     qr_code_data_uri: string
@@ -78,6 +96,7 @@ function SetupForm({ onSuccess }: SetupFormProps) {
         return
       }
       onSuccess({
+        setup_token: data.setup_token,
         totp_secret: data.totp_secret,
         totp_uri: data.totp_uri,
         qr_code_data_uri: data.qr_code_data_uri,
@@ -137,10 +156,10 @@ function SetupForm({ onSuccess }: SetupFormProps) {
         {submitting ? (
           <>
             <Loader2 className="mr-2 size-4 animate-spin" />
-            Creating account…
+            Preparing authenticator…
           </>
         ) : (
-          "Create account"
+          "Continue to authenticator"
         )}
       </Button>
     </form>
@@ -154,17 +173,47 @@ function SetupForm({ onSuccess }: SetupFormProps) {
 interface QrViewProps {
   qrCodeDataUri: string
   totpSecret: string
-  onContinue: () => void
+  setupToken: string
+  onVerified: (token: string, user: AuthUser) => void
+  onStartOver: () => void
 }
 
-function QrView({ qrCodeDataUri, totpSecret, onContinue }: QrViewProps) {
+function QrView({
+  qrCodeDataUri,
+  totpSecret,
+  setupToken,
+  onVerified,
+  onStartOver,
+}: QrViewProps) {
   const [copied, setCopied] = useState(false)
+  const [otp, setOtp] = useState("")
+  const [error, setError] = useState("")
+  const [submitting, setSubmitting] = useState(false)
 
   function copySecret() {
     navigator.clipboard.writeText(totpSecret).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
+  }
+
+  async function handleVerify(e: React.FormEvent) {
+    e.preventDefault()
+    setError("")
+    setSubmitting(true)
+    try {
+      const { ok, data } = await authApi.verifySetup(setupToken, otp)
+      if (!ok) {
+        setError(data.error ?? "Could not verify the code.")
+        return
+      }
+      toast.success("Administrator account created")
+      onVerified(data.token, data.user)
+    } catch {
+      setError("An unexpected error occurred.")
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -207,9 +256,34 @@ function QrView({ qrCodeDataUri, totpSecret, onContinue }: QrViewProps) {
         </div>
       </div>
 
-      <Button className="w-full" onClick={onContinue}>
-        <KeyRound className="mr-2 size-4" />
-        Continue to sign in
+      <form onSubmit={handleVerify} className="space-y-4">
+        <div className="space-y-1.5">
+          <Label htmlFor="setup-otp">One-time code</Label>
+          <Input
+            id="setup-otp"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+            placeholder="6-digit code"
+            minLength={6}
+            maxLength={6}
+            pattern="[0-9]{6}"
+            required
+          />
+        </div>
+        {error && <ErrorMessage message={error} />}
+        <Button className="w-full" type="submit" disabled={submitting}>
+          {submitting ? (
+            <Loader2 className="mr-2 size-4 animate-spin" />
+          ) : (
+            <KeyRound className="mr-2 size-4" />
+          )}
+          Verify and create account
+        </Button>
+      </form>
+      <Button type="button" variant="outline" className="w-full" onClick={onStartOver}>
+        Start over
       </Button>
     </div>
   )
@@ -316,29 +390,26 @@ function LoginForm({ onLoginSuccess }: LoginFormProps) {
 export function AuthPage({
   initialView,
   onLoginSuccess,
-  onSetupComplete,
 }: Props) {
   const [view, setView] = useState<View>(initialView)
   const [totpData, setTotpData] = useState<{
+    setup_token: string
     totp_secret: string
     qr_code_data_uri: string
   } | null>(null)
 
   function handleSetupSuccess(data: {
+    setup_token: string
     totp_secret: string
     totp_uri: string
     qr_code_data_uri: string
   }) {
     setTotpData({
+      setup_token: data.setup_token,
       totp_secret: data.totp_secret,
       qr_code_data_uri: data.qr_code_data_uri,
     })
     setView("setup-qr")
-  }
-
-  function handleQrContinue() {
-    onSetupComplete()
-    setView("login-form")
   }
 
   const titles: Record<View, { heading: string; sub: string }> = {
@@ -348,7 +419,7 @@ export function AuthPage({
     },
     "setup-qr": {
       heading: "Set up authenticator",
-      sub: "Add the TOTP entry to your authenticator app before continuing.",
+      sub: "Scan the QR code, then enter one code to finish registration.",
     },
     "login-form": {
       heading: "Sign in",
@@ -386,7 +457,12 @@ export function AuthPage({
             <QrView
               qrCodeDataUri={totpData.qr_code_data_uri}
               totpSecret={totpData.totp_secret}
-              onContinue={handleQrContinue}
+              setupToken={totpData.setup_token}
+              onVerified={onLoginSuccess}
+              onStartOver={() => {
+                setTotpData(null)
+                setView("setup-form")
+              }}
             />
           )}
 

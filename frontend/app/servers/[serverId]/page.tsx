@@ -25,7 +25,7 @@ import { ServerStats } from "@/components/ServerStats"
 import { PropertiesPanel } from "@/components/PropertiesPanel"
 import { PlayersPanel } from "@/components/PlayersPanel"
 import { BackupsPanel } from "@/components/BackupsPanel"
-import { AuthPage } from "@/components/AuthPage"
+import { AuthPage, AuthStatusError } from "@/components/AuthPage"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
@@ -55,7 +55,8 @@ export default function ServerDetailPage() {
     authenticated,
     user,
     onLoginSuccess,
-    onSetupComplete,
+    retryStatus,
+    statusError,
     logout,
   } = useAuth()
 
@@ -367,12 +368,15 @@ export default function ServerDetailPage() {
     )
   }
 
+  if (statusError) {
+    return <AuthStatusError message={statusError} onRetry={retryStatus} />
+  }
+
   if (setupRequired || !authenticated) {
     return (
       <AuthPage
         initialView={setupRequired ? "setup-form" : "login-form"}
         onLoginSuccess={onLoginSuccess}
-        onSetupComplete={onSetupComplete}
       />
     )
   }

@@ -16,7 +16,8 @@ import backup_manager
 from auth_helpers import authorize, extract_bearer_token
 from auth_manager import (
     authenticate_user,
-    create_initial_user,
+    begin_initial_user_setup,
+    complete_initial_user_setup,
     has_users,
     initialize_auth_storage,
     issue_jwt,
@@ -121,7 +122,7 @@ def auth_status():
 # ---------------------------------------------------------------------------
 @app.route("/api/auth/setup", methods=["POST"])
 def setup_auth():
-    """Create the first local user and return TOTP bootstrap details."""
+    """Start enrollment without creating the administrator account yet."""
     if has_users():
         return jsonify({"error": "Initial setup has already been completed"}), 409
 
@@ -130,17 +131,42 @@ def setup_auth():
     password = str(body.get("password", ""))
 
     try:
-        setup_payload = create_initial_user(username, password)
+        setup_payload = begin_initial_user_setup(username, password)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
 
-    log.info("Initial user created: username=%s", username)
+    log.info("Initial account setup started: username=%s", username)
     return jsonify({
         "success": True,
-        "message": "Initial account created. Scan the QR code and then sign in with your one-time password.",
+        "message": "Scan the QR code, then enter a one-time code to finish registration.",
         **setup_payload,
+    }), 202
+
+
+@app.route("/api/auth/setup/verify", methods=["POST"])
+def verify_setup():
+    """Verify the first TOTP code and create the administrator atomically."""
+    body = request.get_json(silent=True) or {}
+    setup_token = str(body.get("setup_token", ""))
+    otp_code = str(body.get("otp", "")).strip()
+
+    try:
+        user = complete_initial_user_setup(setup_token, otp_code)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+    token, expires_at = issue_jwt(user["id"], user["username"])
+    log.info("Initial account verified and created: username=%s", user["username"])
+    return jsonify({
+        "success": True,
+        "token": token,
+        "token_type": "Bearer",
+        "expires_at": expires_at,
+        "user": user,
     }), 201
 
 
