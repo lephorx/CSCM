@@ -1,0 +1,23 @@
+services:
+  cscm:
+    build: .
+    container_name: cscm_api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      # Docker socket — required to create/manage per-server containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Server data and backups, shared between this container and the
+      # Minecraft server containers it creates via the Docker daemon.
+      - ${SERVERS_DIR_HOST:-/opt/cscm/servers}:/data/servers
+      - ${BACKUPS_DIR_HOST:-/opt/cscm/backups}:/data/backups
+      # Local SQLite database, persisted across rebuilds.
+      - ${DATA_DIR_HOST:-./data}:/app/data
+    environment:
+      - SERVERS_DIR=/data/servers
+      - BACKUPS_DIR=/data/backups
+      - DB_PATH=/app/data/cscm.db
+      - AUTH_DB_PATH=/app/data/cscm.db

@@ -1,0 +1,964 @@
+openapi: 3.0.3
+info:
+  title: CSCM Tool API
+  description: >
+    Self-contained REST API for provisioning and managing Minecraft servers as
+    Docker containers, with PlayIT tunnel and Cloudflare DNS automation.
+  version: "2.0.0"
+servers:
+  - url: http://localhost:5000
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Servers
+  - name: Lifecycle
+  - name: Console
+  - name: Modification
+  - name: Properties
+  - name: Players
+  - name: Backups
+  - name: Files
+  - name: Networking
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        error:
+          type: string
+    Server:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        slug: { type: string }
+        type: { type: string, enum: [paper, forge, fabric, vanilla, purpur, bedrock] }
+        version: { type: string }
+        port: { type: integer }
+        status: { type: string }
+        runtime_status:
+          type: string
+          enum: [not_created, stopped, starting, healthy, unhealthy, running]
+        created_at: { type: string }
+        tunnels:
+          type: array
+          items:
+            type: object
+            properties:
+              address: { type: string }
+              local_port: { type: integer }
+              external_port: { type: integer, nullable: true }
+        dns_records:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              name: { type: string }
+              target: { type: string }
+              port: { type: integer, nullable: true }
+  parameters:
+    ServerId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    BackupId:
+      name: backup_id
+      in: path
+      required: true
+      schema: { type: integer }
+  requestBodies:
+    Username:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [username]
+            properties:
+              username: { type: string }
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /api/auth/status:
+    get:
+      tags: [Auth]
+      summary: Check setup/auth status
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /api/auth/setup:
+    post:
+      tags: [Auth]
+      summary: Create the single admin account (one-time)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        "201": { description: Created }
+        "400": { description: Validation error }
+        "409": { description: Already set up }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with username, password, and TOTP code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, otp]
+              properties:
+                username: { type: string }
+                password: { type: string }
+                otp: { type: string }
+      responses:
+        "200": { description: OK }
+        "401": { description: Invalid credentials }
+        "403": { description: Setup required }
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Get the authenticated user
+      responses:
+        "200": { description: OK }
+        "401": { description: Unauthorized }
+
+  /api/server-types:
+    get:
+      tags: [Servers]
+      summary: List supported Minecraft server flavors (Java flavors + bedrock)
+      responses:
+        "200": { description: OK }
+
+  /api/servers:
+    get:
+      tags: [Servers]
+      summary: List all servers
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Server" }
+    post:
+      tags: [Servers]
+      summary: Provision a new Minecraft server (async — returns 202)
+      description: >
+        `type: "bedrock"` provisions an itzg/minecraft-bedrock-server container
+        instead of the Java image: the port is published as UDP (default 19132),
+        there is no RCON (console commands use the image's send-command script
+        and return no output), and no Cloudflare SRV record is created since
+        Bedrock has no SRV-based port discovery — players must be given the
+        connect address and port directly. loader_version and mem_min are
+        ignored for bedrock (no loader, no JVM).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                type:
+                  {
+                    type: string,
+                    enum: [paper, forge, fabric, vanilla, purpur, bedrock],
+                    default: paper,
+                  }
+                version:
+                  type: string
+                  default: "1.21.4"
+                  description: Defaults to "LATEST" when type is "bedrock".
+                port:
+                  type: integer
+                  minimum: 1024
+                  maximum: 65535
+                  default: 25565
+                  description: Defaults to 19132 when type is "bedrock".
+                mem_min: { type: integer, default: 2 }
+                mem_max: { type: integer, default: 4 }
+                subscription: { type: string, enum: [premium, free] }
+                agent: { type: string }
+                loader_version:
+                  type: string
+                  nullable: true
+                  description: |
+                    Loader/software version. Values by type:
+                    forge — "RECOMMENDED" | "LATEST" | specific e.g. "47.3.0"
+                    fabric — specific e.g. "0.15.11", omit for latest
+                    quilt — specific version, omit for latest
+                    paper/vanilla/purpur/bedrock — not used
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "202": { description: "Provisioning started (poll GET /api/servers/<id>/progress)" }
+        "400": { description: Validation error }
+        "409": { description: Port conflict }
+
+  /api/servers/{id}:
+    get:
+      tags: [Servers]
+      summary: Get server detail
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+    delete:
+      tags: [Servers]
+      summary: Deprovision a server and all its resources (async — returns 202)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "202": { description: Deletion started }
+        "404": { description: Not found }
+        "409": { description: Deletion already in progress }
+
+  /api/servers/{id}/progress:
+    get:
+      tags: [Servers]
+      summary: Live provisioning or deletion progress
+      description: >
+        Poll after a 202 response from POST /api/servers or DELETE /api/servers/{id}.
+        Returns percent (0-100), step description, status (idle | in_progress | completed | failed),
+        and the action being tracked (provision | delete).
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200":
+          description: Current progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server_id: { type: integer }
+                  action: { type: string, nullable: true, enum: [provision, delete] }
+                  status: { type: string, enum: [idle, in_progress, completed, failed] }
+                  percent: { type: integer, minimum: 0, maximum: 100 }
+                  step: { type: string, nullable: true }
+                  message: { type: string, nullable: true }
+                  updated_at: { type: string, nullable: true, format: date-time }
+
+  /api/servers/{id}/start:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/stop:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/restart:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/kill:
+    post:
+      tags: [Lifecycle]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/recreate:
+    post:
+      tags: [Lifecycle]
+      summary: Recreate the container from current DB config (no settings change)
+      description: >
+        Stops, removes, and recreates the container using the server's existing
+        configuration — useful for a container that predates a label/behavior
+        change (e.g. missing the cscm.type label) instead of forcing a recreate
+        via an unrelated RAM/version change. World data is untouched since it
+        lives on the bind-mounted volume, not in the container.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+        "500": { description: Recreate failed }
+
+  /api/servers/{id}/command:
+    post:
+      tags: [Console]
+      summary: Send a console command (RCON for Java, send-command for Bedrock)
+      description: >
+        Bedrock servers have no RCON; the command is delivered via the image's
+        send-command script instead, which does not return console output.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command: { type: string }
+      responses:
+        "200": { description: OK }
+        "400": { description: Missing command }
+        "404": { description: Not found }
+
+  /api/servers/{id}/logs:
+    get:
+      tags: [Console]
+      summary: Get recent console log lines
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: tail
+          in: query
+          schema: { type: integer, default: 200 }
+      responses:
+        "200": { description: OK }
+
+  /api/servers/{id}/console/stream:
+    get:
+      tags: [Console]
+      summary: Live console stream (Server-Sent Events)
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: JWT, since EventSource cannot set headers.
+      responses:
+        "200":
+          description: text/event-stream
+        "401": { description: Unauthorized }
+
+  /api/servers/{id}/stats:
+    get:
+      tags: [Console]
+      summary: Live resource stats and player list
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/servers/{id}/name:
+    patch:
+      tags: [Modification]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/port:
+    patch:
+      tags: [Modification]
+      summary: Change the host port (recreates the container)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [port]
+              properties:
+                { port: { type: integer, minimum: 1024, maximum: 65535 } }
+      responses:
+        "200": { description: OK }
+        "404": { description: Not found }
+        "409": { description: Port conflict }
+
+  /api/servers/{id}/ram:
+    patch:
+      tags: [Modification]
+      summary: Change JVM heap allocation (recreates the container)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mem_min, mem_max]
+              properties:
+                mem_min: { type: integer }
+                mem_max: { type: integer }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/version:
+    patch:
+      tags: [Modification]
+      summary: Change Minecraft version and/or loader version (recreates the container)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string, example: "1.21.4" }
+                loader_version:
+                  type: string
+                  nullable: true
+                  description: |
+                    forge: RECOMMENDED | LATEST | specific e.g. 47.3.0
+                    fabric: specific e.g. 0.15.11, or null for latest
+                    quilt: specific version, or null for latest
+      responses:
+        "200": { description: OK }
+        "400": { description: Nothing to update }
+        "404": { description: Not found }
+        "500": { description: Container recreate failed }
+
+  /api/servers/{id}/bedrock/cheats:
+    patch:
+      tags: [Modification]
+      summary: Enable/disable cheats on a Bedrock server (restarts the container)
+      description: >
+        Bedrock-only (400 for any other type). Sets allow-cheats in
+        server.properties and restarts the container, since that property is
+        only read at startup — there is no live console toggle for it.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200": { description: OK }
+        "400": { description: "'enabled' not a boolean, or server is not type bedrock" }
+        "404": { description: Not found, or server.properties not yet created }
+        "500": { description: Property updated but container restart failed }
+
+  /api/servers/{id}/properties:
+    get:
+      tags: [Properties]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/bedrock/properties:
+    get:
+      tags: [Properties]
+      summary: Get a Bedrock server's server.properties
+      description: Bedrock-only (400 for any other type). Same response shape as GET /api/servers/{id}/properties.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        {
+          "200": { description: OK },
+          "400": { description: Not a bedrock server },
+          "404": { description: Not found },
+        }
+    patch:
+      tags: [Properties]
+      summary: Patch a Bedrock server's server.properties (validated)
+      description: >
+        Bedrock-only (400 for any other type). Like PATCH /api/servers/{id}/properties,
+        but every key/value is checked against Bedrock's actual property list
+        (itzg/docker-minecraft-bedrock-server's property-definitions.json) instead
+        of accepting anything — unknown keys or invalid enum values are rejected.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+                  example: { "allow-cheats": "true", "difficulty": "hard" }
+      responses:
+        "200": { description: OK }
+        "400": { description: Not a bedrock server, missing body, or no valid properties in request }
+        "404": { description: Not found, or server.properties not yet created }
+
+  /api/defaults/properties:
+    get:
+      tags: [Properties]
+      summary: Get default server.properties values for new servers
+      responses:
+        { "200": { description: OK } }
+    put:
+      tags: [Properties]
+      summary: Replace all default server.properties values
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        { "200": { description: OK }, "400": { description: Validation error } }
+    patch:
+      tags: [Properties]
+      summary: Merge/update default server.properties values
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        { "200": { description: OK }, "400": { description: Validation error } }
+    delete:
+      tags: [Properties]
+      summary: Clear all default server.properties values or selected keys
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keys:
+                  type: array
+                  items: { type: string }
+      responses:
+        { "200": { description: OK }, "400": { description: Validation error } }
+    patch:
+      tags: [Properties]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [properties]
+              properties:
+                properties:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/players:
+    get:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/players/{username}/effects:
+    post:
+      tags: [Players]
+      summary: Add a live effect to a player
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [effect]
+              properties:
+                effect: { type: string, example: minecraft:speed }
+                seconds: { type: integer, default: 30 }
+                amplifier: { type: integer, default: 0 }
+                hide_particles: { type: boolean, default: true }
+      responses:
+        {
+          "200": { description: OK },
+          "400": { description: Validation error },
+          "409": { description: Server not running },
+        }
+    delete:
+      tags: [Players]
+      summary: Remove all active effects from a player
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/players/{username}/effects/{effect_id}:
+    delete:
+      tags: [Players]
+      summary: Remove one specific effect from a player
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+        - name: effect_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "400": { description: Validation error },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/whitelist:
+    post:
+      tags: [Players]
+      summary: Add a player to the whitelist/allowlist
+      description: >
+        Java: RCON "whitelist add", requires a running server. Bedrock: the real
+        "allowlist add" console command when running (verified by re-reading
+        allowlist.json since send-command has no output), or a direct
+        allowlist.json edit when stopped. See README "Bedrock whitelist & op
+        tracking" for details.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running (Java only) },
+        }
+    delete:
+      tags: [Players]
+      summary: Remove a player from the whitelist/allowlist
+      description: >
+        Java: RCON "whitelist remove". Bedrock: "allowlist remove" console
+        command when running, direct allowlist.json edit when stopped.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running (Java only) },
+        }
+
+  /api/servers/{id}/ops:
+    post:
+      tags: [Players]
+      summary: Grant operator status
+      description: >
+        Java: RCON "op". Bedrock: "op" console command, requires the server
+        running AND the player to have connected at least once (Bedrock's
+        permissions.json is keyed by XUID only, resolved from connect logs).
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running, or (Bedrock) player has never connected },
+        }
+    delete:
+      tags: [Players]
+      summary: Revoke operator status
+      description: "Java: RCON \"deop\". Bedrock: \"deop\" console command, requires the server running."
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody: { $ref: "#/components/requestBodies/Username" }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/bans:
+    get:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+    post:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username: { type: string }
+                reason: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/bans/{username}:
+    delete:
+      tags: [Players]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: username
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/kick:
+    post:
+      tags: [Players]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username: { type: string }
+                reason: { type: string }
+      responses:
+        {
+          "200": { description: OK },
+          "409": { description: Server not running },
+        }
+
+  /api/servers/{id}/backups:
+    get:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+    post:
+      tags: [Backups]
+      summary: Create a manual backup (zip, copy, or zfs)
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type: { type: string, enum: [zip, copy, zfs], default: zip }
+      responses:
+        "201": { description: Created }
+        "400": { description: Unknown backup type }
+        "500": { description: Backup failed }
+
+  /api/servers/{id}/backups/{backup_id}:
+    delete:
+      tags: [Backups]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - { $ref: "#/components/parameters/BackupId" }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/backups/{backup_id}/download:
+    get:
+      tags: [Backups]
+      summary: Download a backup archive as a zip file
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - { $ref: "#/components/parameters/BackupId" }
+      responses:
+        "200":
+          description: zip file attachment
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "404": { description: Not found }
+
+  /api/servers/{id}/backups/{backup_id}/restore:
+    post:
+      tags: [Backups]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - { $ref: "#/components/parameters/BackupId" }
+      responses:
+        { "200": { description: OK }, "500": { description: Restore failed } }
+
+  /api/servers/{id}/backups/schedule:
+    get:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+    put:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cron]
+              properties:
+                cron: { type: string, example: "0 4 * * *" }
+                retention: { type: integer, default: 5 }
+                enabled: { type: boolean, default: true }
+                type: { type: string, enum: [zip, copy, zfs], default: zip }
+      responses:
+        { "200": { description: OK }, "400": { description: Invalid cron } }
+    delete:
+      tags: [Backups]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      responses: { "200": { description: OK } }
+
+  /api/servers/{id}/files:
+    get:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          schema: { type: string }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/files/download:
+    get:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File contents
+        "404": { description: Not found }
+
+  /api/servers/{id}/files/upload:
+    post:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          schema: { type: string }
+        - name: filename
+          in: query
+          schema: { type: string }
+          description: Optional target filename inside the destination directory.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        {
+          "201": { description: Uploaded },
+          "400": { description: Invalid request },
+        }
+
+  /api/servers/{id}/files/delete:
+    delete:
+      tags: [Files]
+      parameters:
+        - { $ref: "#/components/parameters/ServerId" }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }
+
+  /api/servers/{id}/tunnel:
+    post:
+      tags: [Networking]
+      summary: Create a PlayIT tunnel and Cloudflare DNS record(s) for an existing server
+      description: >
+        Creates a CNAME record, plus a SRV record for Java servers. Bedrock
+        servers get only the CNAME, since Bedrock has no SRV-based port
+        discovery — share the assigned port with players directly.
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                region: { type: string }
+                subscription: { type: string, enum: [premium, free] }
+                agent: { type: string }
+      responses:
+        { "201": { description: Created }, "404": { description: Not found } }
+
+  /api/servers/{id}/subdomain:
+    patch:
+      tags: [Networking]
+      parameters: [{ $ref: "#/components/parameters/ServerId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subdomain]
+              properties: { subdomain: { type: string } }
+      responses:
+        { "200": { description: OK }, "404": { description: Not found } }

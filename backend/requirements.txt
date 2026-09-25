@@ -1,0 +1,15 @@
+requests
+python-dotenv
+docker
+cloudflare
+playwright
+dnspython
+flask
+flask-cors
+PyJWT
+pyotp
+qrcode
+Werkzeug
+APScheduler
+gunicorn
+nbtlib
