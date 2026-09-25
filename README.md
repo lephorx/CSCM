@@ -44,11 +44,17 @@ place and are still referenced by the local `.env`.
 
 ## Development
 
-Run the API from `backend/` and the dashboard from `frontend/`:
+For a host-run API, copy `backend/.env.example` to `backend/.env`. Set
+`SERVERS_DIR`, `BACKUPS_DIR`, `SERVERS_DIR_HOST`, and `BACKUPS_DIR_HOST` to
+writable absolute host paths; each inside/host pair should point to the same
+directory. Set `DB_PATH` and `AUTH_DB_PATH` to the same SQLite file, such as
+the absolute path of `data/cscm.db`. Then run the API from `backend/` and the
+dashboard from `frontend/`:
 
 ```sh
 cd backend
 python -m pip install -r requirements.txt
+playwright install chromium
 python app.py
 ```
 
