@@ -72,7 +72,7 @@ find_installs() {
     done
   for root in "$HOME" /opt /srv; do
     [ -d "$root" ] || continue
-    say "Searching $root… (this can take a few minutes)"
+    say "Searching ${root}… (this can take a few minutes)"
     find "$root" \( -name node_modules -o -name .git -o -name Library -o -name .Trash \
       -o -name .cache -o -name .npm -o -name .docker -o -name proc \) -prune \
       -o -type f -path '*/backend/docker_manager.py' -print 2>/dev/null \
@@ -208,7 +208,7 @@ if [ "$DELETE_DATA" = yes ]; then
   done
 fi
 
-say "Deleting $INSTALL_DIR…"
+say "Deleting ${INSTALL_DIR}…"
 remove_dir "$INSTALL_DIR"
 
 say ""

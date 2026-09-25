@@ -79,7 +79,7 @@ SERVER_DIR=$DATA_DIR/servers
 BACKUP_DIR=$DATA_DIR/backups
 DB_DIR=$DATA_DIR/data
 
-say "Downloading CSCM from $REPO_URL…"
+say "Downloading CSCM from ${REPO_URL}…"
 git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || fail "Could not clone CSCM. Check the repository is public and retry."
 mkdir -p "$SERVER_DIR" "$BACKUP_DIR" "$DB_DIR"
 
