@@ -104,6 +104,7 @@ export function ServerCreateModal({
     mem_min: "2",
     mem_max: "4",
     loader_version: "",
+    local_only: false,
   })
 
   const [errors, setErrors] = useState<Partial<typeof form>>({})
@@ -120,6 +121,7 @@ export function ServerCreateModal({
       mem_min: "2",
       mem_max: "4",
       loader_version: "",
+      local_only: false,
     })
     setErrors({})
     setPortStatus("idle")
@@ -295,6 +297,7 @@ export function ServerCreateModal({
           ? { loader_version: form.loader_version.trim() }
           : {}),
         ...(Object.keys(propsObj).length > 0 ? { properties: propsObj } : {}),
+        ...(form.local_only ? { local_only: true } : {}),
       }
 
       // onStart flips `task` to non-null immediately, which swaps this form
@@ -526,6 +529,59 @@ export function ServerCreateModal({
                   Reserved system port
                 </p>
               ) : null}
+            </div>
+
+            {/* Local Only — skips the PlayIT tunnel and Cloudflare DNS setup
+                entirely; the container's port is still published on the
+                host as usual, just reachable only by whoever can already
+                reach this host (same LAN/machine), not a public address. */}
+            <div className="flex items-start gap-2.5 rounded-md border border-border p-3">
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={form.local_only}
+                disabled={submitting}
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    local_only: !prev.local_only,
+                  }))
+                }
+                className={`mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  form.local_only
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-input bg-background"
+                }`}
+              >
+                {form.local_only && (
+                  <svg
+                    viewBox="0 0 12 12"
+                    className="size-3"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <polyline points="1.5,6 4.5,9 10.5,3" />
+                  </svg>
+                )}
+              </button>
+              <div
+                className="cursor-pointer select-none"
+                onClick={() =>
+                  !submitting &&
+                  setForm((prev) => ({
+                    ...prev,
+                    local_only: !prev.local_only,
+                  }))
+                }
+              >
+                <p className="text-sm font-medium">Local Only</p>
+                <p className="text-xs text-muted-foreground">
+                  Skip the public tunnel and DNS setup — the server is only
+                  reachable on your local network, via this machine&apos;s
+                  own IP address and the port above.
+                </p>
+              </div>
             </div>
 
             {/* RAM — Bedrock has no JVM, so there's no min heap, just a memory cap */}

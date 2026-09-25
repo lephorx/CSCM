@@ -1,5 +1,9 @@
 # CSCM Tool — API Documentation
 
+The current setup and deployment instructions are in the [repository root](../README.md).
+This API is reached through the dashboard's `/api/*` proxy in the combined
+Docker Compose stack.
+
 CSCM (Craft Server & Container Manager) is a self-contained REST API for provisioning and
 managing Minecraft servers. It has no external dependency on Crafty Controller or any
 managed database — every server it creates runs as its own Docker container on the host
@@ -144,8 +148,9 @@ All configuration is via environment variables (see `.env.example`).
 | ---------------------------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DB_PATH`                                                              | `cscm.db`                             | Path to the SQLite database file (app data).                                                                                                                                                  |
 | `AUTH_DB_PATH`                                                         | `cscm.db`                             | Path to the SQLite database file (auth data). Point at the same file as `DB_PATH`.                                                                                                            |
-| `MC_IMAGE`                                                             | `itzg/minecraft-server:java21`        | Docker image used for Java edition server containers.                                                                                                                                         |
+| `MC_IMAGE`                                                             | `itzg/minecraft-server:java25`        | Docker image used for Java edition server containers. Must bundle a JRE new enough for the Minecraft version being run (e.g. Minecraft 26.1+ requires Java 25+) — see [itzg's tag list](https://hub.docker.com/r/itzg/minecraft-server/tags) if you need an older JRE for an older Minecraft version. |
 | `MC_BEDROCK_IMAGE`                                                     | `itzg/minecraft-bedrock-server`       | Docker image used for `bedrock` type server containers.                                                                                                                                       |
+| `MC_CONTAINER_DNS`                                                     | `8.8.8.8,1.1.1.1`                     | Comma-separated DNS servers passed to every Minecraft container. Works around a Docker Desktop quirk (mainly macOS/Windows) where its embedded resolver intermittently fails to resolve jar-download hosts, failing server init. Set to empty (`MC_CONTAINER_DNS=`) to use Docker's default resolver instead. |
 | `SERVERS_DIR`                                                          | `/data/servers`                       | Path to server data directories **as seen by the CSCM process**. Must be an absolute path — Docker rejects relative paths for bind mounts.                                                    |
 | `SERVERS_DIR_HOST`                                                     | `/opt/cscm/servers`                   | Path to the **same** directory **as seen by the Docker daemon** — used for bind-mounting into Minecraft containers. Only differs from `SERVERS_DIR` when CSCM itself runs inside a container. |
 | `BACKUPS_DIR` / `BACKUPS_DIR_HOST`                                     | `/data/backups` / `/opt/cscm/backups` | Same host/container-path split, for backup archives.                                                                                                                                          |
@@ -325,6 +330,7 @@ Lists every server with its tunnels, DNS records, and live `runtime_status`.
       "mem_min": 2,
       "mem_max": 4,
       "status": "created",
+      "local_only": false,
       "runtime_status": "healthy",
       "created_at": "2026-07-01 12:00:00",
       "tunnels": [
@@ -371,6 +377,7 @@ Example response:
     "mem_min": 4,
     "mem_max": 16,
     "status": "created",
+    "local_only": false,
     "runtime_status": "healthy",
     "created_at": "2026-07-04 00:36:32"
   }
@@ -395,8 +402,9 @@ Request body:
 | `port`           | int    | no       | `25565` (`19132` for `bedrock`)      | Host port (1024–65535), must be unique across servers.    |
 | `mem_min`        | int    | no       | `2`                                   | Minimum JVM heap, GB. Ignored for `bedrock` (no JVM).     |
 | `mem_max`        | int    | no       | `4`                                   | Maximum JVM heap, GB. For `bedrock`, used as a container memory cap instead. |
-| `subscription`   | string | no       | env default                          | `premium` or `free` (PlayIT).                             |
-| `agent`          | string | no       | env default                          | PlayIT agent name.                                        |
+| `subscription`   | string | no       | env default                          | `premium` or `free` (PlayIT). Ignored if `local_only` is true. |
+| `agent`          | string | no       | env default                          | PlayIT agent name. Ignored if `local_only` is true.        |
+| `local_only`     | bool   | no       | `false`                              | If true, skip the PlayIT tunnel and Cloudflare DNS steps entirely. See below. |
 | `properties`     | object | no       | defaults                             | Initial `server.properties` values to apply during setup. |
 
 `loader_version` values by server type:
@@ -407,6 +415,24 @@ Request body:
 | `fabric` | specific e.g. `"0.15.11"` · omit / `null` for latest              |
 | `quilt`  | specific version · omit / `null` for latest                       |
 | others   | not used — ignored if provided                                    |
+
+**`local_only: true`** — for a server that's only meant to be reachable on your own network
+(same LAN, or anyone who can already reach this host), not the public internet. Skips the
+PlayIT tunnel and Cloudflare DNS steps entirely — provisioning goes straight from "create
+the Docker container" to done, no browser automation, no dependency on `PLAYIT_*`/
+`CLOUDFLARE_*` being configured. The container's port is still published on the host exactly
+as normal (`docker port <container>`/`-p host:container`), so anything that can already
+reach this machine — e.g. another device on the same LAN — connects directly via
+`<this-host's-LAN-IP>:<port>`. CSCM doesn't attempt to detect or return that IP itself (it
+can't reliably know which of a host's network interfaces/addresses a LAN peer should use);
+you'll need to know your own host's address.
+
+The provisioning result includes `"local_only": true` and no `connect_address`/
+`tunnel_address`/`external_port` fields, since none of those exist for a local-only server.
+`local_only` is also reflected per-server in `GET /api/servers` / `GET /api/servers/<id>`.
+You can add a public tunnel later without recreating anything — call
+`POST /api/servers/<id>/tunnel`, which also flips `local_only` back to `false` once it
+succeeds.
 
 **Bedrock caveats** — `type: "bedrock"` provisions an
 [`itzg/minecraft-bedrock-server`](https://github.com/itzg/docker-minecraft-bedrock-server)
@@ -452,7 +478,8 @@ Response `202` (provisioning starts in background):
 
 After receiving the `202`, poll `GET /api/servers/<id>/progress` until `percent` reaches
 `100` and `status` is `"completed"`. The full server data (tunnel address, DNS records, etc.)
-is then available via `GET /api/servers/<id>`.
+is then available via `GET /api/servers/<id>` — except for a `local_only` server, which has
+no tunnel/DNS data since none was created (see `local_only` above).
 
 You can apply `server.properties` during setup by including a `properties` object:
 
@@ -1285,3 +1312,11 @@ Docker daemon rejects it because something else on the host is already bound to 
 **PlayIT tunnel creation fails.** The PlayIT automation drives a real browser session via
 Playwright — confirm `PLAYIT_EMAIL`/`PLAYIT_PASSWORD` are correct and, if running headless,
 that Chromium's dependencies are installed (the provided `Dockerfile` handles this).
+
+**Java server crash-loops with "requires running the server with Java N or above".**
+`MC_IMAGE`'s bundled JRE is older than what the requested Minecraft version needs (e.g.
+Minecraft 26.1+ needs Java 25+, but `MC_IMAGE` is still pinned to a `java21` tag). Check
+`GET /api/servers/<id>/logs` for this exact message. Fix: set `MC_IMAGE` to a tag with a
+new enough JRE (see [itzg's tag list](https://hub.docker.com/r/itzg/minecraft-server/tags)),
+then `POST /api/servers/<id>/recreate` to rebuild the container against it — world data is
+untouched.

@@ -17,6 +17,11 @@ CREATE TABLE IF NOT EXISTS servers (
     rcon_password TEXT NOT NULL,
     container_id  TEXT,
     status        TEXT NOT NULL DEFAULT 'provisioning',
+    -- If true, provisioning skips the PlayIT tunnel and Cloudflare DNS steps
+    -- entirely — the container's port is still published on the host, so
+    -- anyone on the same network can connect directly, but there's no public
+    -- tunnel/DNS record. POST /api/servers/<id>/tunnel can add one later.
+    local_only    INTEGER NOT NULL DEFAULT 0,
     createdat     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

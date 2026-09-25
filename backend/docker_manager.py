@@ -27,9 +27,16 @@ load_dotenv()
 
 log = get_logger("docker_manager")
 
-MC_IMAGE = os.getenv("MC_IMAGE", "itzg/minecraft-server:java21")
+MC_IMAGE = os.getenv("MC_IMAGE", "itzg/minecraft-server:java25")
 # Separate image for the Bedrock edition — not JVM-based, no server "TYPE" flavours.
 BEDROCK_IMAGE = os.getenv("MC_BEDROCK_IMAGE", "itzg/minecraft-bedrock-server")
+
+# DNS servers for Minecraft containers to use, comma-separated. Works around a
+# known Docker Desktop quirk (mainly macOS/Windows) where its embedded DNS
+# forwarder intermittently times out resolving jar-download hosts (e.g.
+# fill.papermc.io), which fails the server's init script outright. Set
+# MC_CONTAINER_DNS="" to fall back to Docker's own default resolver instead.
+MC_CONTAINER_DNS = [ip.strip() for ip in os.getenv("MC_CONTAINER_DNS", "8.8.8.8,1.1.1.1").split(",") if ip.strip()]
 
 # Path as seen by the Docker daemon (host path) — used only for bind mounts.
 SERVERS_DIR_HOST = os.getenv("SERVERS_DIR_HOST", "/opt/cscm/servers")
@@ -164,6 +171,7 @@ def _create_java_container(row) -> str:
         ports={"25565/tcp": row["serverport"]},
         volumes={_host_bind_path(server_id): {"bind": "/data", "mode": "rw"}},
         restart_policy={"Name": "unless-stopped"},
+        dns=MC_CONTAINER_DNS or None,
         labels={MANAGED_LABEL: "true", SERVER_ID_LABEL: str(server_id), TYPE_LABEL: "java"},
     )
     log.info("Container created: server_id=%d, container_id=%s", server_id, container.id)
@@ -189,6 +197,7 @@ def _create_bedrock_container(row) -> str:
         volumes={_host_bind_path(server_id): {"bind": "/data", "mode": "rw"}},
         restart_policy={"Name": "unless-stopped"},
         mem_limit=f"{row['mem_max_gb']}g",
+        dns=MC_CONTAINER_DNS or None,
         labels={MANAGED_LABEL: "true", SERVER_ID_LABEL: str(server_id), TYPE_LABEL: "bedrock"},
     )
     log.info("Bedrock container created: server_id=%d, container_id=%s", server_id, container.id)

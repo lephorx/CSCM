@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+/data/
+/.pnpm-store/
+/frontend/node_modules/
+/frontend/.next/
+/frontend/out/
+/backend/__pycache__/
+/backend/.venv/
+*.pyc

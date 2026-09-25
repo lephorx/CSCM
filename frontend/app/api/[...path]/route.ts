@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 
-const BACKEND = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000"
+const BACKEND = process.env.CSCM_API_URL ?? "http://localhost:5000"
 
 async function proxy(req: NextRequest, segments: string[]) {
   const isAuthRoute = segments[0] === "auth"
@@ -48,13 +48,21 @@ async function proxy(req: NextRequest, segments: string[]) {
         ? await req.formData()
         : await req.arrayBuffer()
 
-  const upstream = await fetch(url, {
-    method: req.method,
-    headers,
-    body: body as BodyInit | undefined,
-    // @ts-expect-error — Node fetch duplex requirement
-    duplex: "half",
-  })
+  let upstream: Response
+  try {
+    upstream = await fetch(url, {
+      method: req.method,
+      headers,
+      body: body as BodyInit | undefined,
+      // @ts-expect-error — Node fetch duplex requirement
+      duplex: "half",
+    })
+  } catch {
+    return NextResponse.json(
+      { error: "CSCM API is unavailable" },
+      { status: 503 }
+    )
+  }
 
   const resHeaders = new Headers()
   const ct = upstream.headers.get("content-type")

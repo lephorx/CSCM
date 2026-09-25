@@ -38,6 +38,7 @@ def _serialize_server(row, *, include_runtime: bool = True) -> dict:
     server["mem_min"] = server.pop("mem_min_gb")
     server["mem_max"] = server.pop("mem_max_gb")
     server["created_at"] = server.pop("createdat")
+    server["local_only"] = bool(server.get("local_only", 0))
     server.pop("rcon_password", None)
     if include_runtime:
         server["runtime_status"] = docker_manager.runtime_status(server["id"])
@@ -104,6 +105,11 @@ def get_server_detail(server_id: int):
 #                               Default: premium (from PLAYIT_SUBSCRIPTION env var)
 #   agent     string  optional  Agent name for the tunnel (e.g., "US-East", "EU-Central").
 #                               Default: first available (from PLAYIT_AGENT env var)
+#   local_only bool   optional  If true, skip the PlayIT tunnel and Cloudflare DNS steps
+#                               entirely — the container's port is still published on the
+#                               host, so anyone on the same network can connect directly,
+#                               but there's no public tunnel/DNS record. subscription/agent
+#                               are ignored when set. Default: false
 #
 # Bedrock servers have no SRV-based port discovery, no RCON, and are not
 # affected by loader_version. See README.md for full Bedrock caveats.
@@ -135,6 +141,7 @@ def create_server():
     loader_version   = body.get("loader_version")  # None = image default
     subscription = body.get("subscription")
     agent = body.get("agent")
+    local_only = body.get("local_only", False)
     initial_properties = body.get("properties")
 
     if not isinstance(port, int) or not (1024 <= port <= 65535):
@@ -147,17 +154,19 @@ def create_server():
         return jsonify({"error": "'mem_max' must be >= 'mem_min'"}), 400
     if subscription and subscription.lower() not in ("premium", "free"):
         return jsonify({"error": "'subscription' must be 'premium' or 'free'"}), 400
+    if not isinstance(local_only, bool):
+        return jsonify({"error": "'local_only' must be a boolean"}), 400
     if initial_properties is not None and not isinstance(initial_properties, dict):
         return jsonify({"error": "'properties' must be an object when provided"}), 400
 
     log.info(
-        "Server creation requested: name=%s, type=%s, version=%s, port=%d",
-        name, server_type, version, port,
+        "Server creation requested: name=%s, type=%s, version=%s, port=%d, local_only=%s",
+        name, server_type, version, port, local_only,
     )
 
     # Step 1 (synchronous): create DB record → get server_id immediately
     record = _create_server_record(name, server_type, version, loader_version,
-                                    port, mem_min, mem_max)
+                                    port, mem_min, mem_max, local_only)
     if not record["success"]:
         log.error("Server creation record failed: %s", record.get("message"))
         return jsonify(record), 409 if record.get("conflict") else 400
@@ -167,7 +176,7 @@ def create_server():
     progress_store.update(server_id, action="provision", percent=5,
                           step="Database record created")
 
-    # Steps 2-6 (async): container, PlayIT, Cloudflare
+    # Steps 2-6 (async): container, PlayIT, Cloudflare (skipped for local_only)
     def _bg_provision():
         result = _provision_resources(server_id, subdomain, port, subscription, agent)
         if result.get("success") and initial_properties:

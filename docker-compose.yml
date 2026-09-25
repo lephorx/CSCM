@@ -1,0 +1,32 @@
+services:
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVERS_DIR: /data/servers
+      BACKUPS_DIR: /data/backups
+      DB_PATH: /app/data/cscm.db
+      AUTH_DB_PATH: /app/data/cscm.db
+      PLAYIT_HEADLESS: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SERVERS_DIR_HOST:-/opt/cscm/servers}:/data/servers
+      - ${BACKUPS_DIR_HOST:-/opt/cscm/backups}:/data/backups
+      - ${DATA_DIR_HOST:-./data}:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      CSCM_API_URL: http://api:5000
+    ports:
+      - "${WEB_PORT:-3000}:3000"

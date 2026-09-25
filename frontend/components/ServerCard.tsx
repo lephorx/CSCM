@@ -110,15 +110,22 @@ export function ServerCard({ server, stats, onRefresh }: Props) {
         </div>
 
         {/* DNS / tunnel */}
-        {server.dns_records.length > 0 && (
-          <div className="text-xs text-muted-foreground">
-            <p className="truncate">{server.dns_records[0].name}</p>
-            {server.type === "bedrock" && server.tunnels.length > 0 && (
-              <p className="truncate font-medium text-foreground">
-                Port {server.tunnels[0].external_port}
-              </p>
-            )}
-          </div>
+        {server.local_only ? (
+          <p className="truncate text-xs text-muted-foreground">
+            Local only —{" "}
+            {typeof window !== "undefined" ? window.location.hostname : "—"}
+          </p>
+        ) : (
+          server.dns_records.length > 0 && (
+            <div className="text-xs text-muted-foreground">
+              <p className="truncate">{server.dns_records[0].name}</p>
+              {server.type === "bedrock" && server.tunnels.length > 0 && (
+                <p className="truncate font-medium text-foreground">
+                  Port {server.tunnels[0].external_port}
+                </p>
+              )}
+            </div>
+          )
         )}
 
         {/* Actions */}

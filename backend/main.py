@@ -29,11 +29,12 @@ def main() -> None:
     parser.add_argument("--port",    type=int, default=25565,           help="Local server port (19132 is bedrock's default)")
     parser.add_argument("--mem-min", type=int, default=2,               help="Minimum JVM heap (GB)")
     parser.add_argument("--mem-max", type=int, default=4,               help="Maximum JVM heap (GB)")
+    parser.add_argument("--local-only", action="store_true",            help="Skip the PlayIT tunnel and Cloudflare DNS — LAN/same-network access only")
     args = parser.parse_args()
 
     log.info(
-        "Starting server provisioning: name=%s, type=%s, version=%s, port=%d",
-        args.name, args.type, args.version, args.port,
+        "Starting server provisioning: name=%s, type=%s, version=%s, port=%d, local_only=%s",
+        args.name, args.type, args.version, args.port, args.local_only,
     )
 
     result = provision_server(
@@ -43,14 +44,18 @@ def main() -> None:
         server_port=args.port,
         mem_min=args.mem_min,
         mem_max=args.mem_max,
+        local_only=args.local_only,
     )
 
     if result["success"]:
         log.info("Provisioning complete")
         print()
         print(f"  Server ID       : {result['server_id']}")
-        print(f"  Connect address : {result['connect_address']}")
-        print(f"  External port   : {result.get('external_port', 'N/A')}")
+        if result.get("local_only"):
+            print(f"  Local only      : port {result['port']} (no public tunnel/DNS created)")
+        else:
+            print(f"  Connect address : {result['connect_address']}")
+            print(f"  External port   : {result.get('external_port', 'N/A')}")
         print()
     else:
         log.error("Provisioning failed: %s", result["message"])

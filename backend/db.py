@@ -40,6 +40,8 @@ def _migrate_schema() -> None:
         server_cols = {row[1] for row in conn.execute("PRAGMA table_info(servers)").fetchall()}
         if "loader_version" not in server_cols:
             conn.execute("ALTER TABLE servers ADD COLUMN loader_version TEXT")
+        if "local_only" not in server_cols:
+            conn.execute("ALTER TABLE servers ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0")
 
 
 def fetch_server(server_id: int) -> sqlite3.Row | None:

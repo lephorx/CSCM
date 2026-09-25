@@ -581,7 +581,7 @@ export function clearToken() {
 }
 
 // ---------------------------------------------------------------------------
-// Auth API (these routes are handled locally by Next.js, not proxied)
+// Auth API (forwarded by the Next.js proxy to Flask)
 // ---------------------------------------------------------------------------
 
 async function authFetch(endpoint: string, options: RequestInit = {}) {

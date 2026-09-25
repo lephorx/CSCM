@@ -1,4 +1,4 @@
-"""Flask REST API for the CSCM Tool with local-user JWT and TOTP auth.
+"""Flask REST API for CSCM with local-user JWT and TOTP auth.
 
 Server lifecycle (create/start/stop/console/stats/etc.) is handled natively
 via Docker (see docker_manager.py) — no external Crafty Controller. App data
@@ -8,8 +8,8 @@ lives in a local SQLite database (see db.py).
 import os
 from pathlib import Path
 
-from flask import Flask, g, jsonify, render_template, request
-from flask_cors import CORS
+from docker.errors import DockerException
+from flask import Flask, g, jsonify, request
 from dotenv import load_dotenv
 
 import backup_manager
@@ -36,7 +36,6 @@ configure_log()
 
 log = get_logger("api")
 app = Flask(__name__)
-CORS(app)
 
 init_schema()
 initialize_auth_storage()
@@ -78,13 +77,28 @@ def _log_request() -> None:
     )
 
 
+@app.errorhandler(DockerException)
+def handle_docker_unavailable(exc: DockerException):
+    """Nearly every route touches docker_manager, which talks to the Docker
+    daemon over its socket. Without this, an unreachable daemon (not
+    running, crashed, socket permissions) surfaces as a raw Python
+    traceback on whichever endpoint happened to hit it first, instead of a
+    single clean, consistent error.
+    """
+    log.error("Docker daemon unavailable: method=%s path=%s error=%s", request.method, request.path, exc)
+    return jsonify({
+        "success": False,
+        "message": f"Docker daemon unavailable — is it running? ({exc})",
+    }), 503
+
+
 # ---------------------------------------------------------------------------
 # GET /
 # ---------------------------------------------------------------------------
 @app.route("/", methods=["GET"])
 def index():
-    """Serve the authentication bootstrap UI."""
-    return render_template("index.html")
+    """Identify the internal API; the dashboard serves the user interface."""
+    return jsonify({"name": "CSCM API", "health": "/health"})
 
 
 # ---------------------------------------------------------------------------

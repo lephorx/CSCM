@@ -71,6 +71,7 @@ def _create_server_record(
     server_port: int,
     mem_min: int,
     mem_max: int,
+    local_only: bool = False,
 ) -> dict:
     """Step 1: insert the DB row and return {server_id, subdomain} or an error dict."""
     if server_type not in SERVER_TYPES:
@@ -80,18 +81,18 @@ def _create_server_record(
         }
 
     subdomain = _slugify(server_name)
-    log.info("Provisioning server: name=%s, type=%s, version=%s, port=%d",
-             server_name, server_type, version, server_port)
+    log.info("Provisioning server: name=%s, type=%s, version=%s, port=%d, local_only=%s",
+             server_name, server_type, version, server_port, local_only)
 
     rcon_password = secrets.token_urlsafe(24)
     try:
         with get_db() as conn:
             cur = conn.execute(
                 "INSERT INTO servers"
-                " (name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, rcon_password, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning')",
+                " (name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, rcon_password, status, local_only)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?)",
                 (server_name, subdomain, server_type, version, loader_version,
-                 server_port, mem_min, mem_max, rcon_password),
+                 server_port, mem_min, mem_max, rcon_password, int(local_only)),
             )
             db_server_id = cur.lastrowid
         log.info("Server record persisted: db_id=%d", db_server_id)
@@ -125,6 +126,7 @@ def _provision_resources(
             row = conn.execute("SELECT * FROM servers WHERE id = ?", (db_server_id,)).fetchone()
         server_type = row["type"]
         is_bedrock = server_type in BEDROCK_TYPES
+        local_only = bool(row["local_only"])
         container_id = docker_manager.create_server_container(row)
         with get_db() as conn:
             conn.execute(
@@ -138,6 +140,21 @@ def _provision_resources(
         progress_store.update(db_server_id, action="provision", percent=15,
                               step="Container creation failed", status="failed", message=str(exc))
         return {"success": False, "message": f"Container creation failed: {exc}", "server_id": db_server_id}
+
+    if local_only:
+        log.info("Server db_id=%d is local-only — skipping PlayIT tunnel and Cloudflare DNS", db_server_id)
+        progress_store.update(db_server_id, action="provision", percent=100,
+                              step="Server provisioned successfully (local network only)", status="completed")
+        return {
+            "success": True,
+            "message": "Server provisioned successfully (local network only — no public tunnel or DNS created)",
+            "server_id": db_server_id,
+            "local_only": True,
+            "port": server_port,
+            "note": "Reachable only on this machine's own network, via this host's LAN IP address and "
+                    "the configured port. Call POST /api/servers/<id>/tunnel later to make it publicly "
+                    "reachable if you change your mind.",
+        }
 
     # ── Step 3: PlayIT tunnel ────────────────────────────────────────────────
     progress_store.update(db_server_id, action="provision", percent=35,
@@ -249,13 +266,14 @@ def provision_server(
     mem_max: int = 4,
     subscription: str | None = None,
     agent: str | None = None,
+    local_only: bool = False,
 ) -> dict:
     """Synchronous wrapper used by the CLI (main.py).  The HTTP API route
     calls _create_server_record + _provision_resources directly so it can
     return a 202 with server_id before the slow steps complete.
     """
     record = _create_server_record(server_name, server_type, version, loader_version,
-                                    server_port, mem_min, mem_max)
+                                    server_port, mem_min, mem_max, local_only)
     if not record["success"]:
         return record
     return _provision_resources(record["server_id"], record["subdomain"],
@@ -356,7 +374,7 @@ def list_servers() -> list[dict]:
     try:
         with get_db() as conn:
             servers = conn.execute(
-                "SELECT id, name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, status, createdat"
+                "SELECT id, name, slug, type, version, loader_version, serverport, mem_min_gb, mem_max_gb, status, local_only, createdat"
                 " FROM servers ORDER BY id"
             ).fetchall()
             result = []
@@ -382,6 +400,7 @@ def list_servers() -> list[dict]:
                     "mem_min": s["mem_min_gb"],
                     "mem_max": s["mem_max_gb"],
                     "status": s["status"],
+                    "local_only": bool(s["local_only"]),
                     "runtime_status": docker_manager.runtime_status(s["id"]),
                     "created_at": s["createdat"],
                     "tunnels": [
@@ -492,6 +511,13 @@ def create_server_tunnel(db_server_id: int, region: str | None = None, subscript
                     )
             except sqlite3.Error as exc:
                 log.warning("Failed to persist SRV record: %s", exc)
+
+    # A tunnel now exists, so this server is no longer local-only.
+    try:
+        with get_db() as conn:
+            conn.execute("UPDATE servers SET local_only = 0 WHERE id = ?", (db_server_id,))
+    except sqlite3.Error as exc:
+        log.warning("Failed to clear local_only flag for db_id=%d: %s", db_server_id, exc)
 
     log.info(
         "Tunnel created for server db_id=%d: connect_address=%s, external_port=%s",

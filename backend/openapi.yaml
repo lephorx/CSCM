@@ -48,6 +48,11 @@ components:
         version: { type: string }
         port: { type: integer }
         status: { type: string }
+        local_only:
+          type: boolean
+          description: >
+            If true, no PlayIT tunnel/Cloudflare DNS was created — reachable only on
+            the same network as this host.
         runtime_status:
           type: string
           enum: [not_created, stopped, starting, healthy, unhealthy, running]
@@ -218,6 +223,14 @@ paths:
                 mem_max: { type: integer, default: 4 }
                 subscription: { type: string, enum: [premium, free] }
                 agent: { type: string }
+                local_only:
+                  type: boolean
+                  default: false
+                  description: >
+                    If true, skip the PlayIT tunnel and Cloudflare DNS steps entirely.
+                    The container's port is still published on the host, so anyone on
+                    the same network can connect directly, but there's no public
+                    tunnel/DNS record. subscription/agent are ignored when set.
                 loader_version:
                   type: string
                   nullable: true

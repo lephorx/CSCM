@@ -468,7 +468,24 @@ export default function ServerDetailPage() {
         </div>
 
         {/* DNS / tunnel info */}
-        {server.dns_records.length > 0 ? (
+        {server.local_only ? (
+          <div className="mb-6 border border-border bg-muted/40 px-4 py-3">
+            <div className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Address: </span>
+              {typeof window !== "undefined" ? window.location.hostname : "—"}
+              <span className="ml-4">
+                <span className="font-medium text-foreground">Port: </span>
+                {server.port}
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground/80">
+              Local only — no public tunnel or DNS. Reachable at this
+              machine&apos;s own IP (shown above as seen by your browser —
+              adjust it if you&apos;re connecting from a different network
+              path) and port, by anyone who can already reach this host.
+            </p>
+          </div>
+        ) : server.dns_records.length > 0 ? (
           <div className="mb-6 flex items-center justify-between border border-border bg-muted/40 px-4 py-3">
             <div className="text-xs text-muted-foreground">
               {server.type === "bedrock" ? (

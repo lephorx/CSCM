@@ -34,6 +34,7 @@ export interface Server {
   created_at: string
   tunnels: Tunnel[]
   dns_records: DnsRecord[]
+  local_only?: boolean
 }
 
 export interface ServerStats {
@@ -86,6 +87,7 @@ export interface CreateServerPayload {
   subscription?: string
   agent?: string
   properties?: Record<string, string>
+  local_only?: boolean
 }
 
 // ---------------------------------------------------------------------------

@@ -64,6 +64,7 @@ export function normalizeServer(raw: Server): Server {
     ...raw,
     tunnels: raw.tunnels ?? [],
     dns_records: raw.dns_records ?? [],
+    local_only: raw.local_only ?? false,
   }
 }
 
